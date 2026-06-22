@@ -31,17 +31,25 @@
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
+  <!-- Reference assemblies: prefer a local HDT install via HdtLibDir (e.g. E:\...\HDT),
+       otherwise fall back to the copies committed under bin\Debug so the project builds
+       on a clean clone / GitHub Actions without a Hearthstone Deck Tracker install.
+       Override on the command line with /p:HdtLibDir=path\to\HDT\ if needed. -->
+  <PropertyGroup>
+    <HdtLibDir Condition="'$(HdtLibDir)' == '' And Exists('E:\HDT-V2.3.9\HDT\HearthstoneDeckTracker.exe')">E:\HDT-V2.3.9\HDT\</HdtLibDir>
+    <HdtLibDir Condition="'$(HdtLibDir)' == ''">$(MSBuildThisFileDirectory)bin\Debug\</HdtLibDir>
+  </PropertyGroup>
   <ItemGroup>
     <Reference Include="HearthDb, Version=31.2.0.0, Culture=neutral, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>E:\HDT-V2.3.9\HDT\HearthDb.dll</HintPath>
+      <HintPath>$(HdtLibDir)HearthDb.dll</HintPath>
     </Reference>
     <Reference Include="HearthstoneDeckTracker, Version=1.37.5.6952, Culture=neutral, processorArchitecture=x86">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>E:\HDT-V2.3.9\HDT\HearthstoneDeckTracker.exe</HintPath>
+      <HintPath>$(HdtLibDir)HearthstoneDeckTracker.exe</HintPath>
     </Reference>
     <Reference Include="Newtonsoft.Json, Version=13.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
-      <HintPath>..\packages\Newtonsoft.Json.13.0.3\lib\net45\Newtonsoft.Json.dll</HintPath>
+      <HintPath>$(MSBuildThisFileDirectory)packages\Newtonsoft.Json.13.0.3\lib\net45\Newtonsoft.Json.dll</HintPath>
     </Reference>
     <Reference Include="PresentationFramework" />
     <Reference Include="PresentationCore" />
@@ -58,6 +66,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Class1.cs" />
+    <Compile Include="DeepBattlerStandardPlugin.cs" />
     <Compile Include="AgentOutputWindow.xaml.cs">
       <DependentUpon>AgentOutputWindow.xaml</DependentUpon>
     </Compile>

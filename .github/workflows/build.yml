@@ -1,0 +1,32 @@
+name: Build Plugin
+
+# Builds the HDT plugin DLL on a Windows runner so you can download it from the
+# Actions run without needing Visual Studio. References resolve to the HDT / HearthDb
+# / Newtonsoft assemblies committed under DeepBattlerPlugin/bin/Debug (see the
+# HdtLibDir fallback in the .csproj), so no Hearthstone Deck Tracker install is needed.
+
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      # Release config skips the Debug-only AfterBuild target that copies to E:\...\Plugins.
+      - name: Build (Release)
+        run: msbuild DeepBattlerPlugin\DeepBattlerPlugin.csproj /p:Configuration=Release /p:Platform=AnyCPU /p:PlatformTarget=x86 /verbosity:minimal
+
+      - name: Upload plugin DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeepBattlerPlugin
+          path: DeepBattlerPlugin/bin/Release/DeepBattlerPlugin.dll
+          if-no-files-found: error

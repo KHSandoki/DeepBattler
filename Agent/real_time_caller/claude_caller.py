@@ -6,16 +6,24 @@ key. This script shells out to the local ``claude`` CLI (Claude Code) in
 headless / print mode (``claude -p``), so every request uses your logged-in
 subscription -- no ANTHROPIC_API_KEY and no per-token billing.
 
+Modes
+-----
+``--mode battlegrounds`` (default): Hearthstone Battlegrounds coach. Reads the
+    Battlegrounds state the original HDT plugin writes.
+``--mode standard`` (experimental): Standard / constructed ladder coach. Reads
+    the constructed state the Standard plugin writes
+    (``real_time_caller/latest_standard_state.json``) and uses
+    ``util/Prompt_standard.txt``. Heads up: an LLM is only an OK constructed
+    player -- weak at exact lethal math and stale on new-set meta -- so treat
+    this as an assistant, not an autopilot.
+
 What it does
 ------------
-1. Watches the game-state JSON the HDT plugin writes
-   (``real_time_caller/latest_game_state.json``, falling back to
-   ``game_state.json``).
-2. On every meaningful change, asks Claude for one concise Battlegrounds
-   recommendation for the current turn.
+1. Watches the game-state JSON the HDT plugin writes.
+2. On every meaningful change, asks Claude for one concise recommendation for
+   the current decision.
 3. Writes the advice to ``real_time_caller/agent_output.txt`` -- the in-game
-   overlay window (AgentOutputWindow) reads exactly this file -- and prints it
-   to the console.
+   overlay window (AgentOutputWindow) reads exactly this file -- and prints it.
 4. Optionally speaks the advice aloud with offline TTS (``--tts``, needs
    ``pip install pyttsx3``). Claude has no native voice API, so this is local.
 
@@ -24,14 +32,9 @@ Persistent conversation (default)
 By default the script keeps ONE Claude conversation alive for the whole game
 via ``--session-id`` / ``--resume``: the strategy guide is sent only on the
 first turn, and every later turn sends just the new game state. Claude remembers
-the earlier turns and its own prior advice, so you never re-explain the rules
-("you upgraded to tier 3 last turn as I suggested; now..."). A new conversation
-starts automatically when a new game begins (turn counter resets). Use
-``--no-session`` to make every call independent instead.
-
-Note: this is *conversation* persistence (each turn still launches a fresh
-``claude`` process that reloads the saved session from disk), not a warm
-long-lived process. For turn-based play the ~1-2s startup per turn is fine.
+the earlier turns and its own prior advice, so you never re-explain the rules.
+A new conversation starts automatically when a new game begins (turn counter
+resets). Use ``--no-session`` to make every call independent instead.
 
 First-time setup
 ----------------
@@ -39,11 +42,12 @@ Install Claude Code and log in with your Max account once::
 
     claude            # then run /login and pick "Claude account (subscription)"
 
-Then just run::
+Then run::
 
-    python claude_caller.py            # default model: sonnet, session ON
-    python claude_caller.py --model opus --tts
-    python claude_caller.py --no-session   # independent calls (re-send guide each time)
+    python claude_caller.py                       # Battlegrounds, model sonnet
+    python claude_caller.py --mode standard        # Standard ladder (experimental)
+    python claude_caller.py --mode standard --model opus --tts
+    python claude_caller.py --mode standard --once  # one-shot test on current state
 
 No API key required. If ANTHROPIC_API_KEY happens to be set in your environment
 it is stripped from the child process so calls still use your subscription.
@@ -61,44 +65,69 @@ import time
 import uuid
 from pathlib import Path
 
-# --- File paths --------------------------------------------------------------
-# Prompt.txt is a repo asset -> always resolved relative to this script.
-# Runtime game IO (state in, advice out) must match the C# plugin, which writes
-# to %Desktop%\DeepBattler\Agent by default or to DEEPBATTLER_AGENT_DIR if set.
+# --- File roots --------------------------------------------------------------
+# Prompt files are repo assets -> resolved relative to this script.
+# Runtime game IO must match the C# plugin, which writes to %Desktop%\DeepBattler\Agent
+# by default or to DEEPBATTLER_AGENT_DIR if set.
 REAL_TIME_CALLER_DIR = Path(__file__).resolve().parent
 BASE_DIR = REAL_TIME_CALLER_DIR.parent  # the repo's Agent/ directory
 
 _io_root_env = os.environ.get("DEEPBATTLER_AGENT_DIR")
 IO_ROOT = Path(_io_root_env) if _io_root_env else BASE_DIR
 
-PROMPT_FILE = BASE_DIR / "util" / "Prompt.txt"
-LATEST_GAME_STATE_FILE = IO_ROOT / "real_time_caller" / "latest_game_state.json"
-GAME_STATE_FILE = IO_ROOT / "game_state.json"
 AGENT_OUTPUT_FILE = IO_ROOT / "real_time_caller" / "agent_output.txt"
 
 DEFAULT_MODEL = os.environ.get("DEEPBATTLER_MODEL", "sonnet")
 
-# Short persona for the system-prompt channel. Kept tiny so the command line
-# stays well under Windows' cmd.exe limit; the full strategy guide (Prompt.txt)
-# is sent through stdin instead.
-PERSONA = (
-    "You are DeepBattler, a witty top-0.1% Hearthstone Battlegrounds coach. "
-    "Reply with ONE recommendation for the current turn in 1-2 short, concrete "
-    "sentences (reference the actual minions and gold). A light pun is fine. "
-    "No preamble, no markdown headers."
-)
-
-# The positional prompt. The bulky guide + game state ride on stdin.
-INSTRUCTION = (
-    "Based on the current Hearthstone Battlegrounds game state below -- and our "
-    "earlier turns this game, if any -- give your single best move for THIS turn "
-    "(buy / sell / roll / upgrade / position) in 1-2 short, concrete sentences "
-    "referencing the actual minions and gold."
-)
+# --- Per-mode persona + instruction (system-prompt channel stays short) ------
+PERSONA = {
+    "battlegrounds": (
+        "You are DeepBattler, a witty top-0.1% Hearthstone Battlegrounds coach. "
+        "Reply with ONE recommendation for the current turn in 1-2 short, concrete "
+        "sentences (reference the actual minions and gold). A light pun is fine. "
+        "No preamble, no markdown headers."
+    ),
+    "standard": (
+        "You are DeepBattler, a sharp Hearthstone constructed (Standard) coach. "
+        "Reply with the single best play for the current decision in 1-2 short, "
+        "concrete sentences referencing the actual cards, mana and health. Check "
+        "for lethal first. A light pun is fine. No preamble, no markdown headers."
+    ),
+}
+INSTRUCTION = {
+    "battlegrounds": (
+        "Based on the current Hearthstone Battlegrounds game state below -- and our "
+        "earlier turns this game, if any -- give your single best move for THIS turn "
+        "(buy / sell / roll / upgrade / position) in 1-2 short, concrete sentences "
+        "referencing the actual minions and gold."
+    ),
+    "standard": (
+        "Based on the current Hearthstone (Standard / constructed) game state below -- "
+        "and our earlier turns this game, if any -- give the single best play for THIS "
+        "decision (which cards to play, trades, hero power, go face vs develop, what to "
+        "hold) in 1-2 short, concrete sentences. CHECK FOR LETHAL FIRST."
+    ),
+}
 
 
 def log(msg: str) -> None:
     print(msg, flush=True)
+
+
+def resolve_paths(mode: str):
+    """Return (latest_state, fallback_state, prompt_file) for the mode."""
+    rt = IO_ROOT / "real_time_caller"
+    if mode == "standard":
+        return (
+            rt / "latest_standard_state.json",
+            IO_ROOT / "standard_game_state.json",
+            BASE_DIR / "util" / "Prompt_standard.txt",
+        )
+    return (
+        rt / "latest_game_state.json",
+        IO_ROOT / "game_state.json",
+        BASE_DIR / "util" / "Prompt.txt",
+    )
 
 
 def find_claude(explicit: str | None = None) -> str | None:
@@ -118,24 +147,23 @@ def build_cmd(claude_bin: str, args: list[str]) -> list[str]:
     return [claude_bin, *args]
 
 
-def load_strategy_guide() -> str:
-    """Load Prompt.txt (the strategy knowledge base) if present."""
+def load_guide(prompt_file: Path) -> str:
     try:
-        if PROMPT_FILE.exists():
-            text = PROMPT_FILE.read_text(encoding="utf-8").strip()
+        if prompt_file.exists():
+            text = prompt_file.read_text(encoding="utf-8").strip()
             if text:
                 return text
     except Exception as e:  # noqa: BLE001 - never crash on prompt loading
-        log(f"[WARN] Could not read {PROMPT_FILE.name}: {e}")
+        log(f"[WARN] Could not read {prompt_file.name}: {e}")
     return ""
 
 
-def pick_state_file(override: str | None = None) -> Path:
+def pick_state_file(latest: Path, fallback: Path, override: str | None) -> Path:
     if override:
         return Path(override)
-    if LATEST_GAME_STATE_FILE.exists():
-        return LATEST_GAME_STATE_FILE
-    return GAME_STATE_FILE
+    if latest.exists():
+        return latest
+    return fallback
 
 
 def load_game_state(path: Path) -> dict | None:
@@ -165,7 +193,50 @@ def turn_of(state: dict) -> int:
         return 0
 
 
-def summarize(state: dict) -> str:
+def _board_str(board) -> str:
+    if not board:
+        return "empty"
+    out = []
+    for m in board:
+        s = f"{m.get('name', '?')} {m.get('attack', '?')}/{m.get('health', '?')}"
+        kw = "".join(
+            tag for flag, tag in (("taunt", "T"), ("divine_shield", "D"),
+                                   ("stealth", "S"), ("poisonous", "P"),
+                                   ("frozen", "F")) if m.get(flag)
+        )
+        if kw:
+            s += f"[{kw}]"
+        out.append(s)
+    return ", ".join(out)
+
+
+def summarize_standard(state: dict) -> str:
+    gs = state.get("game_state", {})
+    me = state.get("player", {})
+    opp = state.get("opponent", {})
+
+    def hand_str(h):
+        return ", ".join(f"{c.get('name', '?')}({c.get('cost', '?')})" for c in h) if h else "empty"
+
+    played = ", ".join(c.get("name", "?") for c in opp.get("known_played_cards", [])) or "none"
+    me_hero = me.get("hero") or me.get("class") or "?"
+    opp_hero = opp.get("hero") or opp.get("class") or "?"
+    return "\n".join(
+        [
+            f"Turn {gs.get('turn_number', '?')} | {gs.get('phase', '?')} | active: {gs.get('active_player', '?')}",
+            f"YOU ({me_hero}): {me.get('health', '?')}+{me.get('armor', 0)} HP "
+            f"| mana {me.get('mana_available', '?')}/{me.get('mana_total', '?')}",
+            f"  hand: {hand_str(me.get('hand', []))}",
+            f"  board: {_board_str(me.get('board', []))}",
+            f"OPP ({opp_hero}): {opp.get('health', '?')}+{opp.get('armor', 0)} HP "
+            f"| hand {opp.get('hand_count', '?')} cards | secrets {opp.get('secrets_count', 0)}",
+            f"  board: {_board_str(opp.get('board', []))}",
+            f"  played so far: {played}",
+        ]
+    )
+
+
+def summarize_battlegrounds(state: dict) -> str:
     gs = state.get("game_state", {})
     hero = state.get("player_hero", {})
     res = state.get("resources", {})
@@ -182,6 +253,13 @@ def summarize(state: dict) -> str:
     )
 
 
+def summarize(state: dict) -> str:
+    # Detect schema so the summary is right even if --mode is mismatched.
+    if "opponent" in state or "player" in state:
+        return summarize_standard(state)
+    return summarize_battlegrounds(state)
+
+
 def build_stdin(state: dict, guide: str) -> str:
     """guide is included only when non-empty (first turn / independent calls)."""
     parts = []
@@ -195,13 +273,14 @@ def build_stdin(state: dict, guide: str) -> str:
     return "\n\n".join(parts) + "\n"
 
 
-def run_claude(claude_bin, model, stdin_data, timeout, session_id=None, is_first=True):
+def run_claude(claude_bin, model, instruction, persona, stdin_data, timeout,
+               session_id=None, is_first=True):
     """Run one headless claude call. Returns (advice, error).
 
     session_id=None  -> independent one-off call (persona + guide each time).
     is_first=True    -> create the session (--session-id) and set the persona.
-    is_first=False   -> resume the existing conversation (--resume); guide already
-                        lives in the conversation history, so don't resend it.
+    is_first=False   -> resume the existing conversation (--resume); the guide
+                        already lives in history, so don't resend it.
     """
     env = os.environ.copy()
     # Force the Max *subscription* (OAuth). A stray API key would override it and
@@ -209,11 +288,11 @@ def run_claude(claude_bin, model, stdin_data, timeout, session_id=None, is_first
     env.pop("ANTHROPIC_API_KEY", None)
     env.pop("ANTHROPIC_AUTH_TOKEN", None)
 
-    inner = ["-p", INSTRUCTION, "--model", model, "--output-format", "text"]
+    inner = ["-p", instruction, "--model", model, "--output-format", "text"]
     if session_id is None:
-        inner += ["--append-system-prompt", PERSONA]
+        inner += ["--append-system-prompt", persona]
     elif is_first:
-        inner += ["--session-id", session_id, "--append-system-prompt", PERSONA]
+        inner += ["--session-id", session_id, "--append-system-prompt", persona]
     else:
         inner += ["--resume", session_id]
 
@@ -268,13 +347,14 @@ def make_speaker(enabled: bool):
     return speak
 
 
-def process_state(claude_bin, model, guide, state, speak, timeout, session_id, is_first):
+def process_state(claude_bin, model, cfg, state, speak, timeout, session_id, is_first):
     turn = turn_of(state)
     write_output(f"\U0001f914 Analyzing turn {turn}...")
     include_guide = (session_id is None) or is_first
-    stdin_data = build_stdin(state, guide if include_guide else "")
+    stdin_data = build_stdin(state, cfg["guide"] if include_guide else "")
     advice, err = run_claude(
-        claude_bin, model, stdin_data, timeout, session_id=session_id, is_first=is_first
+        claude_bin, model, cfg["instruction"], cfg["persona"], stdin_data, timeout,
+        session_id=session_id, is_first=is_first,
     )
     if err:
         log(f"[ERROR] {err}")
@@ -293,6 +373,9 @@ def main() -> None:
         description="DeepBattler -- drive the coach with your Claude Max subscription "
         "via the local claude CLI (no API key)."
     )
+    parser.add_argument("--mode", choices=["battlegrounds", "standard"],
+                        default="battlegrounds",
+                        help="battlegrounds (default) or standard (experimental ladder coach)")
     parser.add_argument("--model", default=DEFAULT_MODEL,
                         help="claude model alias: sonnet | opus | haiku | fable "
                              "(default: %(default)s; env DEEPBATTLER_MODEL)")
@@ -309,6 +392,8 @@ def main() -> None:
     parser.add_argument("--timeout", type=float, default=90.0,
                         help="seconds before a single Claude call is abandoned "
                              "(default: %(default)s)")
+    parser.add_argument("--prompt-file", default=None,
+                        help="override the strategy prompt file")
     parser.add_argument("--state-file", default=None,
                         help="override the game-state JSON path to watch")
     parser.add_argument("--claude-bin", default=None,
@@ -324,16 +409,23 @@ def main() -> None:
             "        Claude Max account. Docs: https://docs.claude.com/en/docs/claude-code")
         sys.exit(1)
 
+    latest, fallback, default_prompt = resolve_paths(args.mode)
+    prompt_file = Path(args.prompt_file) if args.prompt_file else default_prompt
+    cfg = {
+        "guide": load_guide(prompt_file),
+        "persona": PERSONA[args.mode],
+        "instruction": INSTRUCTION[args.mode],
+    }
     use_session = not args.no_session
-    guide = load_strategy_guide()
     speak = make_speaker(args.tts)
 
     log("=" * 66)
     log("DeepBattler -- Claude Code caller (using your Claude Max subscription)")
+    log(f"  mode:      {args.mode}" + ("  (experimental)" if args.mode == "standard" else ""))
     log(f"  claude:    {claude_bin}")
     log(f"  model:     {args.model}")
-    log(f"  guide:     {PROMPT_FILE if guide else '(built-in default persona only)'}")
-    log(f"  watching:  {pick_state_file(args.state_file)}")
+    log(f"  guide:     {prompt_file if cfg['guide'] else '(built-in default persona only)'}")
+    log(f"  watching:  {pick_state_file(latest, fallback, args.state_file)}")
     log(f"  output ->  {AGENT_OUTPUT_FILE}")
     log(f"  session:   {'continuous per game (remembers prior turns)' if use_session else 'independent calls'}")
     log(f"  TTS:       {'on' if args.tts else 'off (use --tts for voice)'}")
@@ -343,12 +435,11 @@ def main() -> None:
     log("=" * 66)
 
     if args.once:
-        state = load_game_state(pick_state_file(args.state_file))
+        state = load_game_state(pick_state_file(latest, fallback, args.state_file))
         if not state:
             log("[INFO] No valid game state available right now.")
             return
-        # A one-off check is always an independent call.
-        process_state(claude_bin, args.model, guide, state, speak, args.timeout,
+        process_state(claude_bin, args.model, cfg, state, speak, args.timeout,
                       session_id=None, is_first=True)
         return
 
@@ -361,7 +452,7 @@ def main() -> None:
     try:
         while True:
             time.sleep(args.interval)
-            state_file = pick_state_file(args.state_file)
+            state_file = pick_state_file(latest, fallback, args.state_file)
             if not state_file.exists():
                 continue
             try:
@@ -376,8 +467,7 @@ def main() -> None:
             if not state:
                 continue
 
-            # Only act on genuinely new states, and not faster than the cooldown,
-            # to be gentle on the subscription usage limit.
+            # Only act on genuinely new states, and not faster than the cooldown.
             state_hash = hash(json.dumps(state, sort_keys=True))
             if state_hash == last_hash:
                 continue
@@ -401,7 +491,7 @@ def main() -> None:
             phase = state.get("game_state", {}).get("phase", "?")
             tag = "new game" if is_first else ("resume" if use_session else "independent")
             log(f"[turn {turn} | {phase} | {tag}] state changed -> asking Claude ({args.model})...")
-            process_state(claude_bin, args.model, guide, state, speak, args.timeout,
+            process_state(claude_bin, args.model, cfg, state, speak, args.timeout,
                           session_id=active_session, is_first=is_first)
     except KeyboardInterrupt:
         log("\nBye! \U0001f37b")

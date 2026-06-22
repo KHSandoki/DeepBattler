@@ -1,0 +1,51 @@
+{
+  "game_state": {
+    "turn_number": 5,
+    "active_player": "player",
+    "phase": "PlayerTurn"
+  },
+  "player": {
+    "hero": "Jaina Proudmoore",
+    "health": 26,
+    "armor": 0,
+    "mana_available": 5,
+    "mana_total": 5,
+    "overloaded_next_turn": 0,
+    "weapon": null,
+    "hero_power": { "name": "Fireblast", "cost": 2, "description": "Deal 1 damage.", "used": false },
+    "fatigue": 0,
+    "hand": [
+      { "name": "Frostbolt", "cost": 2, "type": "Spell", "description": "Deal 3 damage to a character and Freeze it." },
+      { "name": "Fireball", "cost": 4, "type": "Spell", "description": "Deal 6 damage." },
+      { "name": "Water Elemental", "cost": 4, "type": "Minion", "description": "Freeze any character damaged by this minion." },
+      { "name": "Arcane Intellect", "cost": 3, "type": "Spell", "description": "Draw 2 cards." }
+    ],
+    "board": [
+      { "name": "Mana Wyrm", "attack": 3, "health": 3, "taunt": false, "divine_shield": false, "stealth": false, "poisonous": false, "frozen": false, "can_attack": true, "description": "Whenever you cast a spell, gain +1 Attack." }
+    ],
+    "secrets": [],
+    "deck_remaining_count": 22,
+    "deck_known_cards": [
+      { "name": "Polymorph", "cost": 4, "count": 2 },
+      { "name": "Flamestrike", "cost": 7, "count": 1 }
+    ]
+  },
+  "opponent": {
+    "hero": "Rexxar",
+    "health": 30,
+    "armor": 0,
+    "weapon": null,
+    "hero_power": { "name": "Steady Shot", "cost": 2, "description": "Deal 2 damage to the enemy hero." },
+    "hand_count": 3,
+    "board": [
+      { "name": "Alleycat", "attack": 1, "health": 1, "taunt": false, "divine_shield": false, "stealth": false, "poisonous": false, "frozen": false, "description": "Battlecry: Summon a 1/1 Tabbycat." },
+      { "name": "Animal Companion", "attack": 4, "health": 2, "taunt": false, "divine_shield": false, "stealth": false, "poisonous": false, "frozen": false, "description": "" }
+    ],
+    "secrets_count": 1,
+    "known_played_cards": [
+      { "name": "Alleycat", "cost": 1 },
+      { "name": "Animal Companion", "cost": 3 },
+      { "name": "Kill Command", "cost": 3 }
+    ]
+  }
+}
