@@ -6,8 +6,10 @@
   },
   "player": {
     "hero": "Jaina Proudmoore",
+    "class": "MAGE",
     "health": 26,
     "armor": 0,
+    "hero_can_attack": false,
     "mana_available": 5,
     "mana_total": 5,
     "overloaded_next_turn": 0,
@@ -21,7 +23,7 @@
       { "name": "Arcane Intellect", "cost": 3, "type": "Spell", "description": "Draw 2 cards." }
     ],
     "board": [
-      { "name": "Mana Wyrm", "attack": 3, "health": 3, "taunt": false, "divine_shield": false, "stealth": false, "poisonous": false, "frozen": false, "can_attack": true, "description": "Whenever you cast a spell, gain +1 Attack." }
+      { "name": "Mana Wyrm", "attack": 3, "health": 3, "taunt": false, "divine_shield": false, "stealth": false, "poisonous": false, "frozen": false, "windfury": false, "ready": true, "description": "Whenever you cast a spell, gain +1 Attack." }
     ],
     "secrets": [],
     "deck_remaining_count": 22,
@@ -32,14 +34,15 @@
   },
   "opponent": {
     "hero": "Rexxar",
-    "health": 30,
+    "class": "HUNTER",
+    "health": 14,
     "armor": 0,
     "weapon": null,
     "hero_power": { "name": "Steady Shot", "cost": 2, "description": "Deal 2 damage to the enemy hero." },
     "hand_count": 3,
     "board": [
-      { "name": "Alleycat", "attack": 1, "health": 1, "taunt": false, "divine_shield": false, "stealth": false, "poisonous": false, "frozen": false, "description": "Battlecry: Summon a 1/1 Tabbycat." },
-      { "name": "Animal Companion", "attack": 4, "health": 2, "taunt": false, "divine_shield": false, "stealth": false, "poisonous": false, "frozen": false, "description": "" }
+      { "name": "Alleycat", "attack": 1, "health": 1, "taunt": false, "divine_shield": false, "stealth": false, "poisonous": false, "frozen": false, "windfury": false, "ready": false, "description": "Battlecry: Summon a 1/1 Tabbycat." },
+      { "name": "Animal Companion", "attack": 4, "health": 2, "taunt": false, "divine_shield": false, "stealth": false, "poisonous": false, "frozen": false, "windfury": false, "ready": true, "description": "" }
     ],
     "secrets_count": 1,
     "known_played_cards": [

@@ -58,6 +58,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -76,6 +77,7 @@ _io_root_env = os.environ.get("DEEPBATTLER_AGENT_DIR")
 IO_ROOT = Path(_io_root_env) if _io_root_env else BASE_DIR
 
 AGENT_OUTPUT_FILE = IO_ROOT / "real_time_caller" / "agent_output.txt"
+META_DIR = BASE_DIR / "meta"  # per-class meta notes (repo asset, read live each game)
 
 DEFAULT_MODEL = os.environ.get("DEEPBATTLER_MODEL", "sonnet")
 
@@ -260,16 +262,133 @@ def summarize(state: dict) -> str:
     return summarize_battlegrounds(state)
 
 
-def build_stdin(state: dict, guide: str) -> str:
-    """guide is included only when non-empty (first turn / independent calls)."""
+# ---------------------------------------------------------------------------
+# Standard-mode helpers: deterministic lethal math + per-class meta notes.
+# These offload the LLM's two weak spots (exact arithmetic, stale meta).
+# ---------------------------------------------------------------------------
+
+HERO_TO_CLASS = {
+    "jaina proudmoore": "mage", "rexxar": "hunter", "uther lightbringer": "paladin",
+    "thrall": "shaman", "gul'dan": "warlock", "garrosh hellscream": "warrior",
+    "malfurion stormrage": "druid", "anduin wrynn": "priest",
+    "valeera sanguinar": "rogue", "illidan stormrage": "demonhunter",
+}
+_DEAL_RE = re.compile(r"[Dd]eal[s]?\s+\$?(\d+)\s+damage")
+
+
+def _ready_attackers(board):
+    out = []
+    for m in board or []:
+        ready = m.get("ready")
+        if ready is None:  # older state without the field: best-effort
+            ready = (m.get("attack", 0) or 0) > 0 and not m.get("frozen")
+        if ready and (m.get("attack", 0) or 0) > 0:
+            out.append(m)
+    return out
+
+
+def compute_lethal(state):
+    """Deterministic best-effort lethal estimator for Standard. Returns a text
+    block to hand to Claude (board+weapon math done for it), or None."""
+    me = state.get("player")
+    opp = state.get("opponent")
+    if not me or not opp:
+        return None
+
+    attackers = _ready_attackers(me.get("board", []))
+    board_dmg = sum((m.get("attack", 0) or 0) * (2 if m.get("windfury") else 1) for m in attackers)
+    weapon = me.get("weapon")
+    hero_can = me.get("hero_can_attack")
+    weapon_dmg = (weapon.get("attack", 0) or 0) if (weapon and (hero_can is None or hero_can)) else 0
+    raw = board_dmg + weapon_dmg
+    opp_hp = (opp.get("health", 0) or 0) + (opp.get("armor", 0) or 0)
+    taunts = [m for m in opp.get("board", []) if m.get("taunt")]
+
+    burns = []
+    for c in me.get("hand", []):
+        mt = _DEAL_RE.search(c.get("description", "") or "")
+        if mt:
+            burns.append((c.get("name", "?"), int(mt.group(1))))
+    burn_total = sum(d for _, d in burns)
+
+    lines = ["⚔️ LETHAL CHECK (computed; hero-power/buffs not auto-counted):"]
+    if attackers:
+        atk_list = ", ".join(
+            f"{m.get('name', '?')} {m.get('attack', 0)}" + ("x2(WF)" if m.get("windfury") else "")
+            for m in attackers
+        )
+        lines.append(f"  - Ready attackers: {atk_list} = {board_dmg} board dmg")
+    else:
+        lines.append("  - Ready attackers: none = 0 board dmg")
+    if weapon_dmg:
+        lines.append(f"  - Weapon: {weapon.get('name', '?')} {weapon_dmg}")
+    lines.append(f"  - Raw face damage (taunts ignored): {raw}")
+    lines.append(f"  - Opponent effective HP: {opp_hp} (health {opp.get('health', '?')} + armor {opp.get('armor', 0)})")
+    if taunts:
+        tlist = ", ".join(
+            f"{m.get('name', '?')} {m.get('attack', 0)}/{m.get('health', '?')}" + ("[DS]" if m.get("divine_shield") else "")
+            for m in taunts
+        )
+        lines.append(f"  - ⚠ Opponent TAUNTS block face: {tlist} (clear first)")
+    else:
+        lines.append("  - Opponent taunts: none")
+    if burns:
+        lines.append(
+            "  - Potential burn in hand ('Deal N damage'): "
+            + ", ".join(f"{n} {d}" for n, d in burns)
+            + f" = up to {burn_total} more (if targetable to face)"
+        )
+    if not taunts and raw >= opp_hp:
+        verdict = f"LETHAL on board alone ({raw} >= {opp_hp})."
+    elif not taunts and raw + burn_total >= opp_hp:
+        verdict = f"POSSIBLE lethal with burn ({raw}+{burn_total} >= {opp_hp}) -- verify targets/mana."
+    elif taunts:
+        verdict = "Taunts in the way -- clear them, then re-check face damage."
+    else:
+        verdict = f"NOT lethal this turn by board+burn ({raw}+{burn_total} < {opp_hp})."
+    lines.append(f"  - Verdict: {verdict}")
+    return "\n".join(lines)
+
+
+def _opponent_class(state):
+    opp = state.get("opponent", {})
+    cls = (opp.get("class") or "").strip().lower()
+    if cls and cls not in ("invalid", "neutral"):
+        return cls
+    return HERO_TO_CLASS.get((opp.get("hero") or "").strip().lower(), "")
+
+
+def load_meta(state):
+    """Read general.md + the opponent class's meta file (live, no rebuild needed)."""
+    if not META_DIR.exists():
+        return ""
+    parts = []
+    for path in (META_DIR / "general.md", META_DIR / f"{_opponent_class(state)}.md"):
+        if path.exists():
+            try:
+                t = path.read_text(encoding="utf-8").strip()
+                if t:
+                    parts.append(t)
+            except Exception:  # noqa: BLE001
+                pass
+    body = "\n\n".join(parts)
+    return ("=== META NOTES (current ladder; refresh per patch) ===\n" + body) if body else ""
+
+
+def build_stdin(state: dict, guide: str, meta: str = "", lethal: str = "") -> str:
+    """guide/meta are included only on the first turn; lethal every turn."""
     parts = []
     if guide:
         parts.append("=== DEEPBATTLER STRATEGY GUIDE ===\n" + guide)
+    if meta:
+        parts.append(meta)
     parts.append("=== CURRENT GAME STATE (summary) ===\n" + summarize(state))
     parts.append(
         "=== CURRENT GAME STATE (full JSON) ===\n"
         + json.dumps(state, indent=2, ensure_ascii=False)
     )
+    if lethal:
+        parts.append(lethal)
     return "\n\n".join(parts) + "\n"
 
 
@@ -351,7 +470,10 @@ def process_state(claude_bin, model, cfg, state, speak, timeout, session_id, is_
     turn = turn_of(state)
     write_output(f"\U0001f914 Analyzing turn {turn}...")
     include_guide = (session_id is None) or is_first
-    stdin_data = build_stdin(state, cfg["guide"] if include_guide else "")
+    is_standard = cfg.get("mode") == "standard"
+    meta = load_meta(state) if (is_standard and include_guide) else ""
+    lethal = compute_lethal(state) if is_standard else ""
+    stdin_data = build_stdin(state, cfg["guide"] if include_guide else "", meta, lethal or "")
     advice, err = run_claude(
         claude_bin, model, cfg["instruction"], cfg["persona"], stdin_data, timeout,
         session_id=session_id, is_first=is_first,
@@ -415,6 +537,7 @@ def main() -> None:
         "guide": load_guide(prompt_file),
         "persona": PERSONA[args.mode],
         "instruction": INSTRUCTION[args.mode],
+        "mode": args.mode,
     }
     use_session = not args.no_session
     speak = make_speaker(args.tts)

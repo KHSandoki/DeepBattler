@@ -96,8 +96,10 @@ namespace DeepBattlerPlugin
                 player = new
                 {
                     hero = HeroName(playerHero),
+                    @class = ((CardClass)playerHero.GetTag(GameTag.CLASS)).ToString(),
                     health = Health(playerHero),
                     armor = playerHero.GetTag(GameTag.ARMOR),
+                    hero_can_attack = playerHero.GetTag(GameTag.EXHAUSTED) == 0 && playerHero.GetTag(GameTag.FROZEN) == 0,
                     mana_available = Math.Max(0, playerEntity.GetTag(GameTag.RESOURCES) - playerEntity.GetTag(GameTag.RESOURCES_USED)),
                     mana_total = playerEntity.GetTag(GameTag.RESOURCES),
                     overloaded_next_turn = playerEntity.GetTag(GameTag.OVERLOAD_OWED),
@@ -113,6 +115,7 @@ namespace DeepBattlerPlugin
                 opponent = new
                 {
                     hero = HeroName(opponentHero),
+                    @class = ((CardClass)opponentHero.GetTag(GameTag.CLASS)).ToString(),
                     health = Health(opponentHero),
                     armor = opponentHero.GetTag(GameTag.ARMOR),
                     weapon = Weapon(all, oid),
@@ -179,6 +182,8 @@ namespace DeepBattlerPlugin
                     stealth = e.GetTag(GameTag.STEALTH) == 1,
                     poisonous = e.GetTag(GameTag.POISONOUS) == 1,
                     frozen = e.GetTag(GameTag.FROZEN) == 1,
+                    windfury = e.GetTag(GameTag.WINDFURY) == 1,
+                    ready = e.GetTag(GameTag.EXHAUSTED) == 0 && e.GetTag(GameTag.ATK) > 0 && e.GetTag(GameTag.FROZEN) == 0,
                     description = Clean(e.Card.Text)
                 });
             }
