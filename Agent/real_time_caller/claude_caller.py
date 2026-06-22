@@ -62,6 +62,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -495,40 +496,43 @@ def build_stdin(state: dict, guide: str, meta: str = "", tactical: str = "") -> 
     return "\n\n".join(parts) + "\n"
 
 
-def run_claude(claude_bin, model, instruction, persona, stdin_data, timeout,
-               session_id=None, is_first=True):
-    """Run one headless claude call. Returns (advice, error).
-
-    session_id=None  -> independent one-off call (persona + guide each time).
-    is_first=True    -> create the session (--session-id) and set the persona.
-    is_first=False   -> resume the existing conversation (--resume); the guide
-                        already lives in history, so don't resend it.
-    """
+def _clean_env():
+    """Child env that forces the Max *subscription* (OAuth): a stray API key would
+    override it and bill per token instead of using the subscription."""
     env = os.environ.copy()
-    # Force the Max *subscription* (OAuth). A stray API key would override it and
-    # bill per token instead of using the subscription.
     env.pop("ANTHROPIC_API_KEY", None)
     env.pop("ANTHROPIC_AUTH_TOKEN", None)
+    return env
 
-    inner = ["-p", instruction, "--model", model, "--output-format", "text"]
+
+def _session_args(persona, session_id, is_first):
+    """session_id=None -> independent call; is_first -> create session; else resume."""
     if session_id is None:
-        inner += ["--append-system-prompt", persona]
-    elif is_first:
-        inner += ["--session-id", session_id, "--append-system-prompt", persona]
-    else:
-        inner += ["--resume", session_id]
+        return ["--append-system-prompt", persona]
+    if is_first:
+        return ["--session-id", session_id, "--append-system-prompt", persona]
+    return ["--resume", session_id]
 
+
+# Disable all tools so each call is a single fast completion, not an agent loop:
+# no tool round-trips and a smaller system prompt = noticeably faster + cheaper.
+_NO_TOOLS = ["--disallowedTools", "*"]
+
+
+def run_claude(claude_bin, model, instruction, persona, stdin_data, timeout,
+               session_id=None, is_first=True):
+    """One headless claude call, non-streaming. Returns (advice, error).
+
+    This is the conservative fallback path -- it deliberately mirrors the original
+    working invocation (no extra flags) so it still works if a newer streaming flag
+    is unsupported on the installed CLI."""
+    inner = ["-p", instruction, "--model", model, "--output-format", "text"]
+    inner += _session_args(persona, session_id, is_first)
     cmd = build_cmd(claude_bin, inner)
     try:
         proc = subprocess.run(
-            cmd,
-            input=stdin_data,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=env,
-            timeout=timeout,
+            cmd, input=stdin_data, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", env=_clean_env(), timeout=timeout,
         )
     except subprocess.TimeoutExpired:
         return None, f"claude timed out after {timeout:g}s"
@@ -538,6 +542,90 @@ def run_claude(claude_bin, model, instruction, persona, stdin_data, timeout,
         err = (proc.stderr or proc.stdout or "").strip()
         return None, err or f"claude exited with code {proc.returncode}"
     return (proc.stdout or "").strip(), None
+
+
+def run_claude_stream(claude_bin, model, instruction, persona, stdin_data, timeout,
+                      session_id, is_first, on_text):
+    """Headless claude call that STREAMS the reply. Calls on_text(text_so_far) as
+    tokens arrive, and returns (final_text, error). Uses stream-json + partial
+    messages so the overlay fills in live instead of waiting for the whole answer."""
+    inner = ["-p", instruction, "--model", model,
+             "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
+    inner += _NO_TOOLS + _session_args(persona, session_id, is_first)
+    cmd = build_cmd(claude_bin, inner)
+    try:
+        proc = subprocess.Popen(
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace", env=_clean_env(), bufsize=1,
+        )
+    except FileNotFoundError:
+        return None, f"could not launch '{claude_bin}'"
+
+    # Drain stderr in a thread so a chatty child can't deadlock on a full pipe.
+    err_chunks = []
+    threading.Thread(
+        target=lambda: [err_chunks.append(l) for l in proc.stderr], daemon=True
+    ).start()
+
+    killed = {"v": False}
+
+    def _kill():
+        killed["v"] = True
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+
+    killer = threading.Timer(timeout, _kill)
+    killer.start()
+
+    parts, final_text = [], None
+    try:
+        try:
+            proc.stdin.write(stdin_data)
+            proc.stdin.close()
+        except Exception:  # noqa: BLE001
+            pass
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            etype = ev.get("type")
+            if etype == "stream_event":
+                sub = ev.get("event", {})
+                if sub.get("type") == "content_block_delta":
+                    delta = sub.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        parts.append(delta.get("text", ""))
+                        on_text("".join(parts))
+            elif etype == "assistant":
+                msg = ev.get("message", {})
+                txt = "".join(
+                    c.get("text", "") for c in msg.get("content", [])
+                    if isinstance(c, dict) and c.get("type") == "text"
+                )
+                if txt:
+                    parts = [txt]
+                    on_text(txt)
+            elif etype == "result" and isinstance(ev.get("result"), str):
+                final_text = ev["result"]
+    finally:
+        killer.cancel()
+    try:
+        proc.wait(timeout=5)
+    except Exception:  # noqa: BLE001
+        pass
+
+    text = (final_text if final_text is not None else "".join(parts)).strip()
+    if text:
+        return text, None
+    if killed["v"]:
+        return None, f"claude timed out after {timeout:g}s"
+    return None, ("".join(err_chunks).strip() or f"claude exited with code {proc.returncode}")
 
 
 def write_output(text: str) -> None:
@@ -571,7 +659,7 @@ def make_speaker(enabled: bool):
 
 def process_state(claude_bin, model, cfg, state, speak, timeout, session_id, is_first):
     turn = turn_of(state)
-    write_output(f"\U0001f914 Analyzing turn {turn}...")
+    write_output(f"\U0001f914 分析第 {turn} 回合中…")
     include_guide = (session_id is None) or is_first
     is_standard = cfg.get("mode") == "standard"
     meta = load_meta(state) if (is_standard and include_guide) else ""
@@ -579,19 +667,37 @@ def process_state(claude_bin, model, cfg, state, speak, timeout, session_id, is_
     if is_standard:
         tactical = "\n\n".join(t for t in (compute_lethal(state), compute_threat(state)) if t)
     stdin_data = build_stdin(state, cfg["guide"] if include_guide else "", meta, tactical)
-    advice, err = run_claude(
+
+    # Stream tokens straight into agent_output.txt so the overlay fills in live
+    # instead of waiting for the whole reply. Throttle file writes to ~6/sec.
+    last = [0.0]
+
+    def on_text(partial):
+        now = time.time()
+        if now - last[0] >= 0.15:
+            last[0] = now
+            write_output(partial)
+
+    advice, err = run_claude_stream(
         claude_bin, model, cfg["instruction"], cfg["persona"], stdin_data, timeout,
-        session_id=session_id, is_first=is_first,
+        session_id=session_id, is_first=is_first, on_text=on_text,
     )
     if err:
+        # Streaming hiccup -> fall back to a plain (non-streaming) call once.
+        log(f"[WARN] streaming failed ({err}); retrying without streaming")
+        advice, err = run_claude(
+            claude_bin, model, cfg["instruction"], cfg["persona"], stdin_data, timeout,
+            session_id=session_id, is_first=is_first,
+        )
+    if err:
         log(f"[ERROR] {err}")
-        write_output("⚠️ Claude call failed -- check the console.")
+        write_output("⚠️ Claude 呼叫失敗 — 請看 console。")
         return
     if not advice:
         log("[WARN] Empty response from Claude.")
         return
+    write_output(advice)  # ensure the final, complete text lands on disk
     log(f"\n\U0001f4a1 {advice}\n")
-    write_output(advice)
     speak(advice)
 
 
