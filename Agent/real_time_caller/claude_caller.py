@@ -274,6 +274,7 @@ HERO_TO_CLASS = {
     "valeera sanguinar": "rogue", "illidan stormrage": "demonhunter",
 }
 _DEAL_RE = re.compile(r"[Dd]eal[s]?\s+\$?(\d+)\s+damage")
+_ATK_BUFF_RE = re.compile(r"\+\d+\s*Attack|gain[s]?\s+\+?\d*\s*Attack|give[s]?\b.*\bAttack", re.IGNORECASE)
 
 
 def _ready_attackers(board):
@@ -288,8 +289,15 @@ def _ready_attackers(board):
 
 
 def compute_lethal(state):
-    """Deterministic best-effort lethal estimator for Standard. Returns a text
-    block to hand to Claude (board+weapon math done for it), or None."""
+    """Best-effort lethal helper for Standard.
+
+    It computes ONLY the reliable, deterministic part (ready board attack +
+    windfury + weapon vs the opponent's effective HP, plus flat 'Deal N damage'
+    burn in hand) and then explicitly LISTS the complications it can NOT resolve
+    (divine shield, taunt clearing, your own attack buffs / board growth, hero
+    power, location / random / conditional effects) so Claude factors them in.
+    It is a grounded checklist, not a full combat simulator. Returns text or None.
+    """
     me = state.get("player")
     opp = state.get("opponent")
     if not me or not opp:
@@ -302,7 +310,8 @@ def compute_lethal(state):
     weapon_dmg = (weapon.get("attack", 0) or 0) if (weapon and (hero_can is None or hero_can)) else 0
     raw = board_dmg + weapon_dmg
     opp_hp = (opp.get("health", 0) or 0) + (opp.get("armor", 0) or 0)
-    taunts = [m for m in opp.get("board", []) if m.get("taunt")]
+    opp_board = opp.get("board", [])
+    taunts = [m for m in opp_board if m.get("taunt")]
 
     burns = []
     for c in me.get("hand", []):
@@ -311,42 +320,66 @@ def compute_lethal(state):
             burns.append((c.get("name", "?"), int(mt.group(1))))
     burn_total = sum(d for _, d in burns)
 
-    lines = ["⚔️ LETHAL CHECK (computed; hero-power/buffs not auto-counted):"]
-    if attackers:
-        atk_list = ", ".join(
-            f"{m.get('name', '?')} {m.get('attack', 0)}" + ("x2(WF)" if m.get("windfury") else "")
-            for m in attackers
-        )
-        lines.append(f"  - Ready attackers: {atk_list} = {board_dmg} board dmg")
-    else:
-        lines.append("  - Ready attackers: none = 0 board dmg")
+    lines = ["⚔️ LETHAL CHECK — reliable arithmetic only (complications listed after):"]
+    atk_list = ", ".join(
+        f"{m.get('name', '?')} {m.get('attack', 0)}" + ("x2(WF)" if m.get("windfury") else "")
+        for m in attackers
+    ) or "none"
+    lines.append(f"  - Ready attackers: {atk_list} = {board_dmg} board dmg")
     if weapon_dmg:
         lines.append(f"  - Weapon: {weapon.get('name', '?')} {weapon_dmg}")
     lines.append(f"  - Raw face damage (taunts ignored): {raw}")
     lines.append(f"  - Opponent effective HP: {opp_hp} (health {opp.get('health', '?')} + armor {opp.get('armor', 0)})")
-    if taunts:
-        tlist = ", ".join(
-            f"{m.get('name', '?')} {m.get('attack', 0)}/{m.get('health', '?')}" + ("[DS]" if m.get("divine_shield") else "")
-            for m in taunts
-        )
-        lines.append(f"  - ⚠ Opponent TAUNTS block face: {tlist} (clear first)")
-    else:
-        lines.append("  - Opponent taunts: none")
     if burns:
         lines.append(
-            "  - Potential burn in hand ('Deal N damage'): "
+            "  - Flat burn in hand ('Deal N damage'): "
             + ", ".join(f"{n} {d}" for n, d in burns)
-            + f" = up to {burn_total} more (if targetable to face)"
+            + f" = up to {burn_total} (only if face-targetable)"
         )
-    if not taunts and raw >= opp_hp:
+
+    # Complications NOT included in the number above — surface them, don't fake them.
+    comp = []
+    if taunts:
+        comp.append(
+            "Opponent TAUNTS (clear before any face): "
+            + ", ".join(
+                f"{m.get('name', '?')} {m.get('attack', 0)}/{m.get('health', '?')}"
+                + (" [Divine Shield → needs an extra hit to pop]" if m.get("divine_shield") else "")
+                for m in taunts
+            )
+        )
+    ds_nontaunt = [m for m in opp_board if m.get("divine_shield") and not m.get("taunt")]
+    if ds_nontaunt:
+        comp.append("Opponent Divine Shields (each eats one hit): " + ", ".join(m.get("name", "?") for m in ds_nontaunt))
+    my_poison = [m for m in attackers if m.get("poisonous")]
+    if my_poison and taunts:
+        comp.append("Your Poisonous attackers can kill any ONE taunt cheaply: " + ", ".join(m.get("name", "?") for m in my_poison))
+    buff_cards = [c.get("name", "?") for c in me.get("hand", []) if _ATK_BUFF_RE.search(c.get("description", "") or "")]
+    if buff_cards:
+        comp.append("Attack buffs in HAND (extra dmg if played; sequence first): " + ", ".join(buff_cards))
+    growth = [
+        m.get("name", "?") for m in me.get("board", [])
+        if "attack" in (m.get("description", "") or "").lower()
+        and ("gain" in (m.get("description", "") or "").lower() or "+" in (m.get("description", "") or ""))
+    ]
+    if growth:
+        comp.append("Your minions that GROW attack on a trigger (e.g. on spell cast): " + ", ".join(growth))
+
+    lines.append("  - NOT counted above — you must factor these in yourself:")
+    for c in comp:
+        lines.append(f"      • {c}")
+    lines.append("      • Hero-power damage, location cards, and random/conditional effects are NOT computed.")
+
+    # Verdict from the reliable numbers only, honestly caveated.
+    if taunts:
+        verdict = "Taunts in the way — clear them (mind Divine Shield), then re-check face damage."
+    elif raw >= opp_hp:
         verdict = f"LETHAL on board alone ({raw} >= {opp_hp})."
-    elif not taunts and raw + burn_total >= opp_hp:
-        verdict = f"POSSIBLE lethal with burn ({raw}+{burn_total} >= {opp_hp}) -- verify targets/mana."
-    elif taunts:
-        verdict = "Taunts in the way -- clear them, then re-check face damage."
+    elif raw + burn_total >= opp_hp:
+        verdict = f"POSSIBLE lethal with burn ({raw}+{burn_total} >= {opp_hp}) — verify targets/mana/Divine Shield."
     else:
-        verdict = f"NOT lethal this turn by board+burn ({raw}+{burn_total} < {opp_hp})."
-    lines.append(f"  - Verdict: {verdict}")
+        verdict = f"NOT lethal by board+flat burn ({raw}+{burn_total} < {opp_hp}); buffs/hero-power/locations above could still close it."
+    lines.append(f"  - Verdict (reliable numbers only): {verdict}")
     return "\n".join(lines)
 
 
