@@ -90,10 +90,13 @@ PERSONA = {
         "No preamble, no markdown headers."
     ),
     "standard": (
-        "You are DeepBattler, a sharp Hearthstone constructed (Standard) coach. "
-        "Reply with the single best play for the current decision in 1-2 short, "
-        "concrete sentences referencing the actual cards, mana and health. Check "
-        "for lethal first. A light pun is fine. No preamble, no markdown headers."
+        "You are DeepBattler, a real-time Hearthstone constructed analysis co-pilot. "
+        "Think ALONGSIDE the player: surface the key reads and considerations for the "
+        "current decision (opponent's likely deck, tempo/race, trades, draws/outs, "
+        "hand-reads, lethal both ways) as a concise, scannable analysis -- a one-line "
+        "read, then 2-4 relevant bullets, then any lethal/danger flag. Perspective and "
+        "options, not one barked move. Be honest about hidden info ('likely', not "
+        "certain). Trust the provided LETHAL/THREAT math."
     ),
 }
 INSTRUCTION = {
@@ -104,10 +107,12 @@ INSTRUCTION = {
         "referencing the actual minions and gold."
     ),
     "standard": (
-        "Based on the current Hearthstone (Standard / constructed) game state below -- "
-        "and our earlier turns this game, if any -- give the single best play for THIS "
-        "decision (which cards to play, trades, hero power, go face vs develop, what to "
-        "hold) in 1-2 short, concrete sentences. CHECK FOR LETHAL FIRST."
+        "Analyze the current Hearthstone (Standard) game state below. Give a concise, "
+        "scannable real-time read for THIS decision: lead with who's ahead / who's "
+        "faster and the key question, then the 2-4 most relevant considerations (trades, "
+        "what to play around, hand-reads, draws/outs), then flag lethal or incoming "
+        "lethal using the LETHAL/THREAT checks. Cover what matters NOW, not every angle. "
+        "Honest probabilistic reads for hidden info; trust the provided lethal/threat numbers."
     ),
 }
 
@@ -383,6 +388,40 @@ def compute_lethal(state):
     return "\n".join(lines)
 
 
+def compute_threat(state):
+    """Best-effort 'am I about to be killed?' check for Standard: the opponent's
+    board + weapon attack vs your effective HP. Hidden hand burst is NOT counted
+    (it is hidden) -- treat this as a FLOOR on incoming damage. Returns text or None."""
+    me = state.get("player")
+    opp = state.get("opponent")
+    if not me or not opp:
+        return None
+    opp_board = opp.get("board", [])
+    board_atk = sum(
+        (m.get("attack", 0) or 0) * (2 if m.get("windfury") else 1)
+        for m in opp_board if (m.get("attack", 0) or 0) > 0
+    )
+    weapon = opp.get("weapon")
+    wpn = (weapon.get("attack", 0) or 0) if weapon else 0
+    incoming = board_atk + wpn
+    my_hp = (me.get("health", 0) or 0) + (me.get("armor", 0) or 0)
+    my_taunts = [m for m in me.get("board", []) if m.get("taunt")]
+
+    lines = ["🛡 THREAT CHECK — opponent board+weapon damage to you (hidden hand burst NOT counted; this is a floor):"]
+    lines.append(f"  - Opponent board+weapon attack: {incoming}")
+    lines.append(f"  - Your effective HP: {my_hp} (health {me.get('health', '?')} + armor {me.get('armor', 0)})")
+    if my_taunts:
+        lines.append(
+            "  - Your taunts (they must come through these first): "
+            + ", ".join(f"{m.get('name', '?')} {m.get('attack', 0)}/{m.get('health', '?')}" for m in my_taunts)
+        )
+    if incoming >= my_hp and not my_taunts:
+        lines.append(f"  - ⚠ You could DIE to their board alone next turn ({incoming} >= {my_hp}) -- stabilize (taunt/heal/armor/clear).")
+    elif incoming >= my_hp - 10:
+        lines.append("  - You're within burst range -- account for hidden burn/charge from hand before tapping out.")
+    return "\n".join(lines)
+
+
 def _opponent_class(state):
     opp = state.get("opponent", {})
     cls = (opp.get("class") or "").strip().lower()
@@ -408,8 +447,8 @@ def load_meta(state):
     return ("=== META NOTES (current ladder; refresh per patch) ===\n" + body) if body else ""
 
 
-def build_stdin(state: dict, guide: str, meta: str = "", lethal: str = "") -> str:
-    """guide/meta are included only on the first turn; lethal every turn."""
+def build_stdin(state: dict, guide: str, meta: str = "", tactical: str = "") -> str:
+    """guide/meta are included only on the first turn; tactical (lethal+threat) every turn."""
     parts = []
     if guide:
         parts.append("=== DEEPBATTLER STRATEGY GUIDE ===\n" + guide)
@@ -420,8 +459,8 @@ def build_stdin(state: dict, guide: str, meta: str = "", lethal: str = "") -> st
         "=== CURRENT GAME STATE (full JSON) ===\n"
         + json.dumps(state, indent=2, ensure_ascii=False)
     )
-    if lethal:
-        parts.append(lethal)
+    if tactical:
+        parts.append(tactical)
     return "\n\n".join(parts) + "\n"
 
 
@@ -505,8 +544,10 @@ def process_state(claude_bin, model, cfg, state, speak, timeout, session_id, is_
     include_guide = (session_id is None) or is_first
     is_standard = cfg.get("mode") == "standard"
     meta = load_meta(state) if (is_standard and include_guide) else ""
-    lethal = compute_lethal(state) if is_standard else ""
-    stdin_data = build_stdin(state, cfg["guide"] if include_guide else "", meta, lethal or "")
+    tactical = ""
+    if is_standard:
+        tactical = "\n\n".join(t for t in (compute_lethal(state), compute_threat(state)) if t)
+    stdin_data = build_stdin(state, cfg["guide"] if include_guide else "", meta, tactical)
     advice, err = run_claude(
         claude_bin, model, cfg["instruction"], cfg["persona"], stdin_data, timeout,
         session_id=session_id, is_first=is_first,
