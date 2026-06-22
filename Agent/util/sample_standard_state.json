@@ -28,6 +28,7 @@
       { "name": "Spellslinger Rusher", "attack": 4, "health": 4, "taunt": false, "divine_shield": false, "stealth": false, "poisonous": false, "frozen": false, "windfury": false, "rush": true, "charge": false, "lifesteal": false, "reborn": false, "position": 2, "summoned_this_turn": true, "ready": true, "description": "Rush." }
     ],
     "secrets": [],
+    "locations": [],
     "deck_remaining_count": 21,
     "deck_known_cards": [
       { "name": "Polymorph", "cost": 4, "count": 2 },
@@ -43,15 +44,20 @@
     "weapon": null,
     "hero_power": { "name": "Steady Shot", "cost": 2, "description": "Deal 2 damage to the enemy hero." },
     "hand_count": 3,
+    "known_hand_cards": [ { "name": "Kill Command", "cost": 3 } ],
     "board": [
       { "name": "Alleycat", "attack": 1, "health": 1, "taunt": false, "divine_shield": false, "stealth": false, "poisonous": false, "frozen": false, "windfury": false, "rush": false, "charge": false, "lifesteal": false, "reborn": false, "position": 1, "summoned_this_turn": false, "ready": false, "description": "Battlecry: Summon a 1/1 Tabbycat." },
       { "name": "Animal Companion", "attack": 4, "health": 2, "taunt": false, "divine_shield": false, "stealth": false, "poisonous": false, "frozen": false, "windfury": false, "rush": false, "charge": false, "lifesteal": false, "reborn": false, "position": 2, "summoned_this_turn": false, "ready": true, "description": "" }
     ],
+    "locations": [],
     "secrets_count": 1,
     "known_played_cards": [
       { "name": "Alleycat", "cost": 1 },
       { "name": "Animal Companion", "cost": 3 },
       { "name": "Kill Command", "cost": 3 }
+    ],
+    "predicted_deck_cards": [
+      { "name": "Unleash the Hounds", "cost": 3, "count": 1 }
     ]
   }
 }

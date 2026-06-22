@@ -112,8 +112,9 @@ namespace DeepBattlerPlugin
                     hand = HandCards(game.Player?.Hand),
                     board = Minions(game.Player?.Board),
                     secrets = KnownSecrets(all, pid),
-                    deck_remaining_count = DeckCount(all, pid),
-                    deck_known_cards = DeckKnown(all, pid)
+                    locations = Locations(all, pid),
+                    deck_remaining_count = game.Player?.DeckCount ?? DeckCount(all, pid),
+                    deck_known_cards = CardObjs(game.Player?.KnownCardsInDeck)
                 },
                 opponent = new
                 {
@@ -125,11 +126,14 @@ namespace DeepBattlerPlugin
                     weapon = Weapon(all, oid),
                     hero_power = HeroPower(all, oid),
                     hand_count = game.Opponent?.Hand?.Count() ?? 0,
+                    known_hand_cards = KnownHandCards(game.Opponent?.Hand),
                     board = Minions(game.Opponent?.Board),
+                    locations = Locations(all, oid),
                     secrets_count = all.Count(e =>
                         e.GetTag(GameTag.ZONE) == (int)Zone.SECRET &&
                         e.GetTag(GameTag.CONTROLLER) == oid),
-                    known_played_cards = OpponentPlayed(all, oid)
+                    known_played_cards = OpponentPlayed(all, oid),
+                    predicted_deck_cards = CardObjs(game.Opponent?.KnownCardsInDeck)
                 }
             };
 
@@ -306,6 +310,52 @@ namespace DeepBattlerPlugin
                 .GroupBy(e => e.Card.Name)
                 .Select(g => (object)new { name = g.Key, cost = g.First().Card.Cost })
                 .ToList();
+        }
+
+        // Cards HDT has identified in a hand (opponent hidden cards are skipped).
+        private static List<object> KnownHandCards(IEnumerable<Entity> hand)
+        {
+            var list = new List<object>();
+            if (hand == null)
+                return list;
+            foreach (var e in hand)
+            {
+                if (e?.Card == null || string.IsNullOrEmpty(e.Card.Name))
+                    continue; // unknown / hidden card
+                int cost = e.GetTag(GameTag.COST);
+                if (cost <= 0)
+                    cost = e.Card.Cost;
+                list.Add(new { name = e.Card.Name, cost = cost });
+            }
+            return list;
+        }
+
+        // HDT Card list (KnownCardsInDeck / predictions) -> name/cost/count objects.
+        private static List<object> CardObjs(IEnumerable<Card> cards)
+        {
+            var list = new List<object>();
+            if (cards == null)
+                return list;
+            foreach (var c in cards)
+            {
+                if (c == null || string.IsNullOrEmpty(c.Name))
+                    continue;
+                list.Add(new { name = c.Name, cost = c.Cost, count = c.Count });
+            }
+            return list;
+        }
+
+        private static List<object> Locations(IEnumerable<Entity> all, int controller)
+        {
+            var list = new List<object>();
+            foreach (var e in all.Where(x => x.IsLocation
+                && x.GetTag(GameTag.CONTROLLER) == controller
+                && x.GetTag(GameTag.ZONE) == (int)Zone.PLAY
+                && x.Card != null && !string.IsNullOrEmpty(x.Card.Name)))
+            {
+                list.Add(new { name = e.Card.Name, description = Clean(e.Card.Text) });
+            }
+            return list;
         }
 
         private static void TryWrite(string path, string json)

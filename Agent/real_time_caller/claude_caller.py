@@ -230,19 +230,23 @@ def summarize_standard(state: dict) -> str:
         return ", ".join(f"{c.get('name', '?')}({c.get('cost', '?')})" for c in h) if h else "empty"
 
     played = ", ".join(c.get("name", "?") for c in opp.get("known_played_cards", [])) or "none"
+    known_hand = ", ".join(c.get("name", "?") for c in opp.get("known_hand_cards", [])) or "none revealed"
     me_hero = me.get("hero") or me.get("class") or "?"
     opp_hero = opp.get("hero") or opp.get("class") or "?"
+    sd = me.get("spell_damage", 0) or 0
+    sd_str = f" | spell dmg +{sd}" if sd else ""
     return "\n".join(
         [
             f"Turn {gs.get('turn_number', '?')} | {gs.get('phase', '?')} | active: {gs.get('active_player', '?')}",
             f"YOU ({me_hero}): {me.get('health', '?')}+{me.get('armor', 0)} HP "
-            f"| mana {me.get('mana_available', '?')}/{me.get('mana_total', '?')}",
+            f"| mana {me.get('mana_available', '?')}/{me.get('mana_total', '?')}{sd_str}",
             f"  hand: {hand_str(me.get('hand', []))}",
             f"  board: {_board_str(me.get('board', []))}",
             f"OPP ({opp_hero}): {opp.get('health', '?')}+{opp.get('armor', 0)} HP "
             f"| hand {opp.get('hand_count', '?')} cards | secrets {opp.get('secrets_count', 0)}",
             f"  board: {_board_str(opp.get('board', []))}",
             f"  played so far: {played}",
+            f"  known in their hand: {known_hand}",
         ]
     )
 
