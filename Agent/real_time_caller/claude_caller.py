@@ -96,10 +96,12 @@ PERSONA = {
         "current decision (opponent's likely deck, tempo/race, trades, draws/outs, "
         "hand-reads, lethal both ways) as a concise, scannable analysis -- a one-line "
         "read, then 2-4 relevant bullets, then any lethal/danger flag, then a concrete "
-        "'> PLAY:' line (the ordered actions for this turn: cards to play, trade vs go "
-        "face, hero power, what to hold). Perspective + one concrete pick, not just a "
-        "barked move. Be honest about hidden info ('likely', not certain). Trust the "
-        "provided LETHAL/THREAT math."
+        "final action line. Perspective + one concrete pick, not just a barked move. "
+        "Be honest about hidden info ('likely', not certain). Trust the provided "
+        "LETHAL/THREAT math. "
+        "IMPORTANT: 一律用『繁體中文(台灣用語)』回答。最後一行以「▶ 出牌:」開頭,"
+        "寫出這回合的實際操作順序(出哪些牌、撞臉還是交換、要不要用英雄技能及目標、留哪些牌)。"
+        "卡牌名稱沿用遊戲狀態(state)裡出現的名稱。語氣精簡、像並肩思考的隊友。"
     ),
 }
 INSTRUCTION = {
@@ -114,10 +116,10 @@ INSTRUCTION = {
         "scannable real-time read for THIS decision: lead with who's ahead / who's "
         "faster and the key question, then the 2-4 most relevant considerations (trades, "
         "what to play around, hand-reads, draws/outs), then flag lethal or incoming "
-        "lethal using the LETHAL/THREAT checks, then FINISH with a concrete '> PLAY:' "
-        "line -- the ordered actions for this turn (cards to play and order, trade vs go "
-        "face, hero power + target, what to hold). Cover what matters NOW, not every "
-        "angle. Honest probabilistic reads for hidden info; trust the provided lethal/threat numbers."
+        "lethal using the LETHAL/THREAT checks, then FINISH with a concrete final action "
+        "line. Cover what matters NOW, not every angle. Honest probabilistic reads for "
+        "hidden info; trust the provided lethal/threat numbers. "
+        "用繁體中文(台灣用語)回答,最後一行以「▶ 出牌:」開頭。"
     ),
 }
 

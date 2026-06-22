@@ -68,6 +68,7 @@
     <Compile Include="Class1.cs" />
     <Compile Include="DeepBattlerStandardPlugin.cs" />
     <Compile Include="DebugStateWindow.cs" />
+    <Compile Include="CoachWindow.cs" />
     <Compile Include="AgentOutputWindow.xaml.cs">
       <DependentUpon>AgentOutputWindow.xaml</DependentUpon>
     </Compile>

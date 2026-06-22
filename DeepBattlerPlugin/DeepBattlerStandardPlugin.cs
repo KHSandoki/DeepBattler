@@ -47,6 +47,10 @@ namespace DeepBattlerPlugin
         private DebugStateWindow _debugWindow;
         private DateTime _lastDebug = DateTime.MinValue;
 
+        // On-screen coach overlay -- shows the Python analysis (agent_output.txt) during
+        // a constructed match. Created in OnLoad, shown/hidden by game mode in OnUpdate.
+        private CoachWindow _coachWindow;
+
         private static string ResolveAgentRoot()
         {
             var overrideDir = Environment.GetEnvironmentVariable("DEEPBATTLER_AGENT_DIR");
@@ -73,31 +77,36 @@ namespace DeepBattlerPlugin
             Log("DeepBattler Standard plugin loaded.");
             Log("agent root: " + _agentRoot);
             Log("writing state to: " + _latestPath);
-            ShowDebugWindow();
+            CreateOverlayWindows();
         }
 
-        private void ShowDebugWindow()
+        private void CreateOverlayWindows()
         {
             try
             {
                 var app = Application.Current;
                 if (app == null)
                 {
-                    Log("WARN: no WPF Application.Current -- debug window not shown");
+                    Log("WARN: no WPF Application.Current -- overlay windows not shown");
                     return;
                 }
+                string outputFile = Path.Combine(_agentRoot, "real_time_caller", "agent_output.txt");
                 app.Dispatcher.Invoke(() =>
                 {
                     if (_debugWindow == null)
                         _debugWindow = new DebugStateWindow();
                     _debugWindow.Show();
                     _debugWindow.Activate();
+
+                    if (_coachWindow == null)
+                        _coachWindow = new CoachWindow(outputFile);
+                    // Coach starts hidden; OnUpdate shows it once a constructed match begins.
                 });
-                Log("debug window shown");
+                Log("overlay windows created (coach reads " + outputFile + ")");
             }
             catch (Exception ex)
             {
-                Log("ERROR creating debug window: " + ex.Message);
+                Log("ERROR creating overlay windows: " + ex.Message);
             }
         }
 
@@ -105,10 +114,15 @@ namespace DeepBattlerPlugin
         {
             try
             {
-                var w = _debugWindow;
+                var dbg = _debugWindow;
+                var coach = _coachWindow;
                 _debugWindow = null;
-                if (w != null)
-                    Application.Current?.Dispatcher?.Invoke(() => w.ForceClose());
+                _coachWindow = null;
+                Application.Current?.Dispatcher?.Invoke(() =>
+                {
+                    dbg?.ForceClose();
+                    coach?.ForceClose();
+                });
             }
             catch { }
         }
@@ -157,18 +171,38 @@ namespace DeepBattlerPlugin
                 }
             }
 
-            // Refresh the always-on debug window (throttled, independent of match state).
+            // Refresh the always-on debug window + drive the coach overlay (throttled).
             try
             {
-                if (_debugWindow != null && (DateTime.Now - _lastDebug).TotalMilliseconds >= 400)
+                if ((DateTime.Now - _lastDebug).TotalMilliseconds >= 400)
                 {
                     _lastDebug = DateTime.Now;
-                    string body, status;
-                    BuildDebugText(out body, out status);
-                    _debugWindow.SetText(body, status);
+                    if (_debugWindow != null)
+                    {
+                        string body, status;
+                        BuildDebugText(out body, out status);
+                        _debugWindow.SetText(body, status);
+                    }
+                    // Coach overlay only during a constructed match (appears from mulligan).
+                    _coachWindow?.SetVisible(InConstructedMatch());
                 }
             }
-            catch { /* never let the debug view break the plugin */ }
+            catch { /* never let the overlays break the plugin */ }
+        }
+
+        // True when a constructed (non-Battlegrounds) match with both heroes is live.
+        private static bool InConstructedMatch()
+        {
+            var game = Core.Game;
+            if (game == null || game.Player?.Hero == null || game.Opponent?.Hero == null)
+                return false;
+            try
+            {
+                if (game.Entities.Values.Any(e => e.GetTag(GameTag.IS_BACON_POOL_MINION) == 1))
+                    return false; // Battlegrounds
+            }
+            catch { }
+            return true;
         }
 
         // Builds the full serializable constructed-match state, or null if a full
