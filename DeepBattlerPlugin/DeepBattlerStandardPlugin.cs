@@ -37,8 +37,10 @@ namespace DeepBattlerPlugin
         private readonly string _latestPath = Path.Combine(_agentRoot, "real_time_caller", "latest_standard_state.json");
         private readonly string _statePath = Path.Combine(_agentRoot, "standard_game_state.json");
         private static readonly Encoding _utf8NoBom = new UTF8Encoding(false);
+        private static readonly string _logPath = Path.Combine(_agentRoot, "deepbattler_standard.log");
 
         private string _lastJson = "";
+        private string _lastError = "";
 
         private static string ResolveAgentRoot()
         {
@@ -50,7 +52,24 @@ namespace DeepBattlerPlugin
                 "DeepBattler", "Agent");
         }
 
-        public void OnLoad() { }
+        private static void Log(string msg)
+        {
+            try
+            {
+                File.AppendAllText(_logPath,
+                    "[" + DateTime.Now.ToString("HH:mm:ss") + "] " + msg + Environment.NewLine, _utf8NoBom);
+            }
+            catch { }
+        }
+
+        public void OnLoad()
+        {
+            try { File.WriteAllText(_logPath, "", _utf8NoBom); } catch { }  // fresh log each HDT session
+            Log("DeepBattler Standard plugin loaded.");
+            Log("agent root: " + _agentRoot);
+            Log("writing state to: " + _latestPath);
+        }
+
         public void OnUnload() { }
         public void OnButtonPress() { }
 
@@ -62,7 +81,13 @@ namespace DeepBattlerPlugin
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("DeepBattlerStandard: " + ex.Message);
+                // HDT calls OnUpdate every frame -- only log a NEW/changed error so we don't spam.
+                string msg = ex.GetType().Name + ": " + ex.Message;
+                if (msg != _lastError)
+                {
+                    _lastError = msg;
+                    Log("ERROR in WriteStateIfChanged: " + msg + Environment.NewLine + ex.StackTrace);
+                }
             }
         }
 
@@ -143,6 +168,10 @@ namespace DeepBattlerPlugin
             _lastJson = json;
             TryWrite(_statePath, json);
             TryWrite(_latestPath, json);
+            Log("wrote turn " + turn + " myTurn=" + myTurn
+                + " | you board=" + (game.Player?.Board?.Count() ?? 0) + " hand=" + (game.Player?.Hand?.Count() ?? 0)
+                + " | opp board=" + (game.Opponent?.Board?.Count() ?? 0) + " hand=" + (game.Opponent?.Hand?.Count() ?? 0)
+                + " knownHand=" + KnownHandCards(game.Opponent?.Hand).Count + " | " + json.Length + " bytes");
         }
 
         // ---------------------------------------------------------------- helpers
@@ -367,9 +396,9 @@ namespace DeepBattlerPlugin
                     Directory.CreateDirectory(dir);
                 File.WriteAllText(path, json, _utf8NoBom);
             }
-            catch
+            catch (Exception ex)
             {
-                // ignore IO failures
+                Log("ERROR writing " + path + ": " + ex.Message);
             }
         }
     }

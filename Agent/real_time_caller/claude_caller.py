@@ -78,6 +78,7 @@ IO_ROOT = Path(_io_root_env) if _io_root_env else BASE_DIR
 
 AGENT_OUTPUT_FILE = IO_ROOT / "real_time_caller" / "agent_output.txt"
 META_DIR = BASE_DIR / "meta"  # per-class meta notes (repo asset, read live each game)
+LOG_FILE = REAL_TIME_CALLER_DIR / "caller.log"  # console output mirrored here for debugging
 
 DEFAULT_MODEL = os.environ.get("DEEPBATTLER_MODEL", "sonnet")
 
@@ -123,6 +124,11 @@ INSTRUCTION = {
 
 def log(msg: str) -> None:
     print(msg, flush=True)
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
+    except Exception:  # noqa: BLE001 - logging must never crash the app
+        pass
 
 
 def resolve_paths(mode: str):
@@ -620,6 +626,11 @@ def main() -> None:
     parser.add_argument("--once", action="store_true",
                         help="evaluate the current state once and exit (handy for testing)")
     args = parser.parse_args()
+
+    try:
+        LOG_FILE.write_text("", encoding="utf-8")  # fresh log each run
+    except Exception:  # noqa: BLE001
+        pass
 
     claude_bin = find_claude(args.claude_bin)
     if not claude_bin:
