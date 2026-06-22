@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Windows;
 using System.Windows.Controls;
 using Hearthstone_Deck_Tracker.API;
 using Hearthstone_Deck_Tracker.Hearthstone;
@@ -28,7 +29,7 @@ namespace DeepBattlerPlugin
     {
         public string Name => "DeepBattler Standard";
         public string Description => "Serialize Standard/constructed game state for the LLM coach (experimental)";
-        public string ButtonText => "Do Nothing";
+        public string ButtonText => "Toggle Debug Window";
         public string Author => "DeepBattler";
         public Version Version => new Version(0, 1, 0);
         public MenuItem MenuItem => null;
@@ -41,6 +42,10 @@ namespace DeepBattlerPlugin
 
         private string _lastJson = "";
         private string _lastError = "";
+
+        // Always-on debug overlay (created in OnLoad, updated every ~0.4s in OnUpdate).
+        private DebugStateWindow _debugWindow;
+        private DateTime _lastDebug = DateTime.MinValue;
 
         private static string ResolveAgentRoot()
         {
@@ -68,10 +73,72 @@ namespace DeepBattlerPlugin
             Log("DeepBattler Standard plugin loaded.");
             Log("agent root: " + _agentRoot);
             Log("writing state to: " + _latestPath);
+            ShowDebugWindow();
         }
 
-        public void OnUnload() { }
-        public void OnButtonPress() { }
+        private void ShowDebugWindow()
+        {
+            try
+            {
+                var app = Application.Current;
+                if (app == null)
+                {
+                    Log("WARN: no WPF Application.Current -- debug window not shown");
+                    return;
+                }
+                app.Dispatcher.Invoke(() =>
+                {
+                    if (_debugWindow == null)
+                        _debugWindow = new DebugStateWindow();
+                    _debugWindow.Show();
+                    _debugWindow.Activate();
+                });
+                Log("debug window shown");
+            }
+            catch (Exception ex)
+            {
+                Log("ERROR creating debug window: " + ex.Message);
+            }
+        }
+
+        public void OnUnload()
+        {
+            try
+            {
+                var w = _debugWindow;
+                _debugWindow = null;
+                if (w != null)
+                    Application.Current?.Dispatcher?.Invoke(() => w.ForceClose());
+            }
+            catch { }
+        }
+
+        // HDT's plugin button toggles the debug window's visibility.
+        public void OnButtonPress()
+        {
+            try
+            {
+                var app = Application.Current;
+                if (app == null)
+                    return;
+                app.Dispatcher.Invoke(() =>
+                {
+                    if (_debugWindow == null)
+                        _debugWindow = new DebugStateWindow();
+                    if (_debugWindow.IsVisible)
+                        _debugWindow.Hide();
+                    else
+                    {
+                        _debugWindow.Show();
+                        _debugWindow.Activate();
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                Log("ERROR toggling debug window: " + ex.Message);
+            }
+        }
 
         public void OnUpdate()
         {
@@ -89,19 +156,34 @@ namespace DeepBattlerPlugin
                     Log("ERROR in WriteStateIfChanged: " + msg + Environment.NewLine + ex.StackTrace);
                 }
             }
+
+            // Refresh the always-on debug window (throttled, independent of match state).
+            try
+            {
+                if (_debugWindow != null && (DateTime.Now - _lastDebug).TotalMilliseconds >= 400)
+                {
+                    _lastDebug = DateTime.Now;
+                    string body, status;
+                    BuildDebugText(out body, out status);
+                    _debugWindow.SetText(body, status);
+                }
+            }
+            catch { /* never let the debug view break the plugin */ }
         }
 
-        private void WriteStateIfChanged()
+        // Builds the full serializable constructed-match state, or null if a full
+        // match (both heroes + player entity) isn't in progress yet.
+        private object BuildState()
         {
             var game = Core.Game;
             if (game == null)
-                return;
+                return null;
 
             var playerEntity = game.PlayerEntity;
             var playerHero = game.Player?.Hero;
             var opponentHero = game.Opponent?.Hero;
             if (playerEntity == null || playerHero == null || opponentHero == null)
-                return;
+                return null;
 
             int pid = playerEntity.GetTag(GameTag.PLAYER_ID);
             int oid = opponentHero.GetTag(GameTag.CONTROLLER);
@@ -112,7 +194,7 @@ namespace DeepBattlerPlugin
             int playerSpellDamage = SpellDamage(game.Player?.Board);
             int opponentSpellDamage = SpellDamage(game.Opponent?.Board);
 
-            var state = new
+            return new
             {
                 game_state = new
                 {
@@ -161,6 +243,17 @@ namespace DeepBattlerPlugin
                     predicted_deck_cards = CardObjs(game.Opponent?.KnownCardsInDeck)
                 }
             };
+        }
+
+        private void WriteStateIfChanged()
+        {
+            var state = BuildState();
+            if (state == null)
+                return;
+
+            var game = Core.Game;
+            int turn = game.GameEntity?.GetTag(GameTag.TURN) ?? 0;
+            bool myTurn = game.PlayerEntity.GetTag(GameTag.CURRENT_PLAYER) == 1;
 
             string json = JsonConvert.SerializeObject(state, Formatting.Indented);
             if (json == _lastJson)
@@ -172,6 +265,72 @@ namespace DeepBattlerPlugin
                 + " | you board=" + (game.Player?.Board?.Count() ?? 0) + " hand=" + (game.Player?.Hand?.Count() ?? 0)
                 + " | opp board=" + (game.Opponent?.Board?.Count() ?? 0) + " hand=" + (game.Opponent?.Hand?.Count() ?? 0)
                 + " knownHand=" + KnownHandCards(game.Opponent?.Hand).Count + " | " + json.Length + " bytes");
+        }
+
+        // Renders the always-on debug text: mode + null-checks + the full state JSON
+        // when in a match, or a partial view (your hand/board) before both heroes exist.
+        private void BuildDebugText(out string body, out string status)
+        {
+            var sb = new StringBuilder();
+            var game = Core.Game;
+            if (game == null)
+            {
+                body = "Core.Game is NULL -- HDT is not tracking a game session yet.";
+                status = "no game | " + DateTime.Now.ToString("HH:mm:ss");
+                return;
+            }
+
+            var playerEntity = game.PlayerEntity;
+            var playerHero = game.Player?.Hero;
+            var opponentHero = game.Opponent?.Hero;
+            int turn = game.GameEntity?.GetTag(GameTag.TURN) ?? 0;
+
+            bool bg = false;
+            try { bg = game.Entities.Values.Any(e => e.GetTag(GameTag.IS_BACON_POOL_MINION) == 1); }
+            catch { }
+
+            string mode;
+            if (opponentHero != null && playerHero != null)
+                mode = bg ? "BATTLEGROUNDS" : "CONSTRUCTED (Standard/Wild)";
+            else if (bg)
+                mode = "BATTLEGROUNDS (lobby/combat)";
+            else
+                mode = "MENU / not in a match";
+
+            sb.AppendLine("MODE : " + mode);
+            sb.AppendLine("TURN : " + turn + "    entities: " + game.Entities.Count);
+            sb.AppendLine("you  : Hero=" + (playerHero != null ? HeroName(playerHero) : "NULL")
+                          + "   PlayerEntity=" + (playerEntity != null ? "ok" : "NULL"));
+            sb.AppendLine("opp  : Hero=" + (opponentHero != null ? HeroName(opponentHero) : "NULL"));
+            sb.AppendLine(new string('-', 54));
+
+            var state = BuildState();
+            if (state != null)
+            {
+                try { sb.Append(JsonConvert.SerializeObject(state, Formatting.Indented)); }
+                catch (Exception ex) { sb.AppendLine("state serialize error: " + ex.Message); }
+                status = "state OK -> latest_standard_state.json | " + DateTime.Now.ToString("HH:mm:ss");
+            }
+            else
+            {
+                sb.AppendLine("(not a full constructed match yet -- partial info only)");
+                sb.AppendLine();
+                sb.AppendLine("your hand : " + NamesOf(game.Player?.Hand));
+                sb.AppendLine("your board: " + NamesOf(game.Player?.Board));
+                sb.AppendLine("opp board : " + NamesOf(game.Opponent?.Board));
+                status = mode + " | " + DateTime.Now.ToString("HH:mm:ss");
+            }
+
+            body = sb.ToString();
+        }
+
+        private static string NamesOf(IEnumerable<Entity> ents)
+        {
+            if (ents == null)
+                return "(null)";
+            var names = ents.Where(e => e?.Card != null && !string.IsNullOrEmpty(e.Card.Name))
+                            .Select(e => e.Card.Name).ToList();
+            return names.Count == 0 ? "(none)" : string.Join(", ", names);
         }
 
         // ---------------------------------------------------------------- helpers
