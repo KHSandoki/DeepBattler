@@ -73,13 +73,24 @@ namespace DeepBattlerPlugin
         private CardEntityInfo[] _lastWarband = Array.Empty<CardEntityInfo>();
         private CardEntityInfo[] _lastTavernEntities = Array.Empty<CardEntityInfo>();
         private CardEntityInfo[] _lastHand = Array.Empty<CardEntityInfo>();
-        private readonly string _path = @"C:\Users\Guanming Wang\Desktop\DeepBattler\Agent\game_state.json";
-        private readonly string _historyPath = @"C:\Users\Guanming Wang\Desktop\DeepBattler\Agent\game_history.json";
-        private readonly string _resourcesRoot = @"C:\Users\Guanming Wang\Desktop\DeepBattler\Agent\resources";
-        private readonly string _latestGameStatePath = @"C:\Users\Guanming Wang\Desktop\DeepBattler\Agent\real_time_caller\latest_game_state.json";
-        //private readonly string _path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Agent", "game_state.json");
-        //private readonly string _historyPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Agent", "game_history.json");
-        //private readonly string _resourcesRoot = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Agent", "resources");
+        // Portable paths -- no hard-coded user name. Defaults to %Desktop%\DeepBattler\Agent
+        // (matches AgentOutputWindow). Override the root with the DEEPBATTLER_AGENT_DIR env var
+        // if your repo lives somewhere else.
+        private static readonly string _agentRoot = ResolveAgentRoot();
+        private readonly string _path = Path.Combine(_agentRoot, "game_state.json");
+        private readonly string _historyPath = Path.Combine(_agentRoot, "game_history.json");
+        private readonly string _resourcesRoot = Path.Combine(_agentRoot, "resources");
+        private readonly string _latestGameStatePath = Path.Combine(_agentRoot, "real_time_caller", "latest_game_state.json");
+
+        private static string ResolveAgentRoot()
+        {
+            var overrideDir = Environment.GetEnvironmentVariable("DEEPBATTLER_AGENT_DIR");
+            if (!string.IsNullOrEmpty(overrideDir))
+                return overrideDir;
+            return Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+                "DeepBattler", "Agent");
+        }
         private AgentOutputWindow _agentOutputWindow;
         private string _heroName = "Unknown Hero";
         private int _playerHeroId = 0;

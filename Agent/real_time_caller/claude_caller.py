@@ -19,6 +19,20 @@ What it does
 4. Optionally speaks the advice aloud with offline TTS (``--tts``, needs
    ``pip install pyttsx3``). Claude has no native voice API, so this is local.
 
+Persistent conversation (default)
+---------------------------------
+By default the script keeps ONE Claude conversation alive for the whole game
+via ``--session-id`` / ``--resume``: the strategy guide is sent only on the
+first turn, and every later turn sends just the new game state. Claude remembers
+the earlier turns and its own prior advice, so you never re-explain the rules
+("you upgraded to tier 3 last turn as I suggested; now..."). A new conversation
+starts automatically when a new game begins (turn counter resets). Use
+``--no-session`` to make every call independent instead.
+
+Note: this is *conversation* persistence (each turn still launches a fresh
+``claude`` process that reloads the saved session from disk), not a warm
+long-lived process. For turn-based play the ~1-2s startup per turn is fine.
+
 First-time setup
 ----------------
 Install Claude Code and log in with your Max account once::
@@ -27,8 +41,9 @@ Install Claude Code and log in with your Max account once::
 
 Then just run::
 
-    python claude_caller.py            # default model: sonnet
+    python claude_caller.py            # default model: sonnet, session ON
     python claude_caller.py --model opus --tts
+    python claude_caller.py --no-session   # independent calls (re-send guide each time)
 
 No API key required. If ANTHROPIC_API_KEY happens to be set in your environment
 it is stripped from the child process so calls still use your subscription.
@@ -43,15 +58,23 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
-# --- File paths (resolved relative to this script, mirroring gemini_live.py) ---
+# --- File paths --------------------------------------------------------------
+# Prompt.txt is a repo asset -> always resolved relative to this script.
+# Runtime game IO (state in, advice out) must match the C# plugin, which writes
+# to %Desktop%\DeepBattler\Agent by default or to DEEPBATTLER_AGENT_DIR if set.
 REAL_TIME_CALLER_DIR = Path(__file__).resolve().parent
-BASE_DIR = REAL_TIME_CALLER_DIR.parent
-LATEST_GAME_STATE_FILE = REAL_TIME_CALLER_DIR / "latest_game_state.json"
-GAME_STATE_FILE = BASE_DIR / "game_state.json"
+BASE_DIR = REAL_TIME_CALLER_DIR.parent  # the repo's Agent/ directory
+
+_io_root_env = os.environ.get("DEEPBATTLER_AGENT_DIR")
+IO_ROOT = Path(_io_root_env) if _io_root_env else BASE_DIR
+
 PROMPT_FILE = BASE_DIR / "util" / "Prompt.txt"
-AGENT_OUTPUT_FILE = REAL_TIME_CALLER_DIR / "agent_output.txt"
+LATEST_GAME_STATE_FILE = IO_ROOT / "real_time_caller" / "latest_game_state.json"
+GAME_STATE_FILE = IO_ROOT / "game_state.json"
+AGENT_OUTPUT_FILE = IO_ROOT / "real_time_caller" / "agent_output.txt"
 
 DEFAULT_MODEL = os.environ.get("DEEPBATTLER_MODEL", "sonnet")
 
@@ -67,9 +90,10 @@ PERSONA = (
 
 # The positional prompt. The bulky guide + game state ride on stdin.
 INSTRUCTION = (
-    "Using the DeepBattler strategy guide and the current Battlegrounds game "
-    "state provided on input, give your single best move for THIS turn "
-    "(buy / sell / roll / upgrade / position) in 1-2 short, concrete sentences."
+    "Based on the current Hearthstone Battlegrounds game state below -- and our "
+    "earlier turns this game, if any -- give your single best move for THIS turn "
+    "(buy / sell / roll / upgrade / position) in 1-2 short, concrete sentences "
+    "referencing the actual minions and gold."
 )
 
 
@@ -134,6 +158,13 @@ def load_game_state(path: Path) -> dict | None:
     return None
 
 
+def turn_of(state: dict) -> int:
+    try:
+        return int(state.get("game_state", {}).get("turn_number", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def summarize(state: dict) -> str:
     gs = state.get("game_state", {})
     hero = state.get("player_hero", {})
@@ -152,6 +183,7 @@ def summarize(state: dict) -> str:
 
 
 def build_stdin(state: dict, guide: str) -> str:
+    """guide is included only when non-empty (first turn / independent calls)."""
     parts = []
     if guide:
         parts.append("=== DEEPBATTLER STRATEGY GUIDE ===\n" + guide)
@@ -163,20 +195,28 @@ def build_stdin(state: dict, guide: str) -> str:
     return "\n\n".join(parts) + "\n"
 
 
-def call_claude(claude_bin: str, model: str, stdin_data: str, timeout: float):
-    """Run one headless claude call. Returns (advice, error)."""
+def run_claude(claude_bin, model, stdin_data, timeout, session_id=None, is_first=True):
+    """Run one headless claude call. Returns (advice, error).
+
+    session_id=None  -> independent one-off call (persona + guide each time).
+    is_first=True    -> create the session (--session-id) and set the persona.
+    is_first=False   -> resume the existing conversation (--resume); guide already
+                        lives in the conversation history, so don't resend it.
+    """
     env = os.environ.copy()
     # Force the Max *subscription* (OAuth). A stray API key would override it and
     # bill per token instead of using the subscription.
     env.pop("ANTHROPIC_API_KEY", None)
     env.pop("ANTHROPIC_AUTH_TOKEN", None)
 
-    inner = [
-        "-p", INSTRUCTION,
-        "--model", model,
-        "--append-system-prompt", PERSONA,
-        "--output-format", "text",
-    ]
+    inner = ["-p", INSTRUCTION, "--model", model, "--output-format", "text"]
+    if session_id is None:
+        inner += ["--append-system-prompt", PERSONA]
+    elif is_first:
+        inner += ["--session-id", session_id, "--append-system-prompt", PERSONA]
+    else:
+        inner += ["--resume", session_id]
+
     cmd = build_cmd(claude_bin, inner)
     try:
         proc = subprocess.run(
@@ -228,10 +268,14 @@ def make_speaker(enabled: bool):
     return speak
 
 
-def process_state(claude_bin, model, guide, state, speak, timeout) -> None:
-    turn = state.get("game_state", {}).get("turn_number", "?")
+def process_state(claude_bin, model, guide, state, speak, timeout, session_id, is_first):
+    turn = turn_of(state)
     write_output(f"\U0001f914 Analyzing turn {turn}...")
-    advice, err = call_claude(claude_bin, model, build_stdin(state, guide), timeout)
+    include_guide = (session_id is None) or is_first
+    stdin_data = build_stdin(state, guide if include_guide else "")
+    advice, err = run_claude(
+        claude_bin, model, stdin_data, timeout, session_id=session_id, is_first=is_first
+    )
     if err:
         log(f"[ERROR] {err}")
         write_output("⚠️ Claude call failed -- check the console.")
@@ -252,6 +296,9 @@ def main() -> None:
     parser.add_argument("--model", default=DEFAULT_MODEL,
                         help="claude model alias: sonnet | opus | haiku | fable "
                              "(default: %(default)s; env DEEPBATTLER_MODEL)")
+    parser.add_argument("--no-session", action="store_true",
+                        help="make every call independent instead of continuing one "
+                             "conversation per game (re-sends the strategy guide each turn)")
     parser.add_argument("--tts", action="store_true",
                         help="speak advice aloud via offline pyttsx3")
     parser.add_argument("--interval", type=float, default=1.0,
@@ -277,6 +324,7 @@ def main() -> None:
             "        Claude Max account. Docs: https://docs.claude.com/en/docs/claude-code")
         sys.exit(1)
 
+    use_session = not args.no_session
     guide = load_strategy_guide()
     speak = make_speaker(args.tts)
 
@@ -285,7 +333,9 @@ def main() -> None:
     log(f"  claude:    {claude_bin}")
     log(f"  model:     {args.model}")
     log(f"  guide:     {PROMPT_FILE if guide else '(built-in default persona only)'}")
+    log(f"  watching:  {pick_state_file(args.state_file)}")
     log(f"  output ->  {AGENT_OUTPUT_FILE}")
+    log(f"  session:   {'continuous per game (remembers prior turns)' if use_session else 'independent calls'}")
     log(f"  TTS:       {'on' if args.tts else 'off (use --tts for voice)'}")
     if os.environ.get("ANTHROPIC_API_KEY"):
         log("  note:      ANTHROPIC_API_KEY is set but will be IGNORED so calls use\n"
@@ -297,13 +347,17 @@ def main() -> None:
         if not state:
             log("[INFO] No valid game state available right now.")
             return
-        process_state(claude_bin, args.model, guide, state, speak, args.timeout)
+        # A one-off check is always an independent call.
+        process_state(claude_bin, args.model, guide, state, speak, args.timeout,
+                      session_id=None, is_first=True)
         return
 
     log("Watching for game-state changes... (Ctrl+C to stop)\n")
     last_mtime = None
     last_hash = None
     last_call = 0.0
+    session_id = None
+    last_turn = None
     try:
         while True:
             time.sleep(args.interval)
@@ -332,10 +386,23 @@ def main() -> None:
             last_hash = state_hash
             last_call = time.time()
 
-            turn = state.get("game_state", {}).get("turn_number", "?")
+            turn = turn_of(state)
+
+            # Session lifecycle: start a fresh conversation for a new game
+            # (first run, or the turn counter dropped = a new game began).
+            is_first = False
+            if use_session:
+                if session_id is None or (last_turn is not None and turn < last_turn):
+                    session_id = str(uuid.uuid4())
+                    is_first = True
+            active_session = session_id if use_session else None
+            last_turn = turn
+
             phase = state.get("game_state", {}).get("phase", "?")
-            log(f"[turn {turn} | {phase}] state changed -> asking Claude ({args.model})...")
-            process_state(claude_bin, args.model, guide, state, speak, args.timeout)
+            tag = "new game" if is_first else ("resume" if use_session else "independent")
+            log(f"[turn {turn} | {phase} | {tag}] state changed -> asking Claude ({args.model})...")
+            process_state(claude_bin, args.model, guide, state, speak, args.timeout,
+                          session_id=active_session, is_first=is_first)
     except KeyboardInterrupt:
         log("\nBye! \U0001f37b")
 

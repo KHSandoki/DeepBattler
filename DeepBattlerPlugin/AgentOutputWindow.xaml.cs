@@ -16,14 +16,17 @@ namespace DeepBattlerPlugin
         {
             InitializeComponent();
             
-            // Path to agent output file (Python agent will write here)
-            _outputFilePath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
-                "DeepBattler",
-                "Agent",
-                "real_time_caller",
-                "agent_output.txt"
-            );
+            // Path to agent output file (Python agent will write here).
+            // Portable: honor DEEPBATTLER_AGENT_DIR, else default to %Desktop%\DeepBattler\Agent
+            // (kept in sync with DeepBattlerPlugin.ResolveAgentRoot()).
+            var agentRoot = Environment.GetEnvironmentVariable("DEEPBATTLER_AGENT_DIR");
+            if (string.IsNullOrEmpty(agentRoot))
+            {
+                agentRoot = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+                    "DeepBattler", "Agent");
+            }
+            _outputFilePath = Path.Combine(agentRoot, "real_time_caller", "agent_output.txt");
 
             // Ensure directory exists
             var directory = Path.GetDirectoryName(_outputFilePath);

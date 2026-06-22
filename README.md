@@ -185,18 +185,20 @@ If you have a **Claude Max** (or Pro) subscription, you can drive DeepBattler th
 3. **Run the caller:**
    ```bash
    cd Agent/real_time_caller
-   python claude_caller.py                 # default model: sonnet
+   python claude_caller.py                 # default model: sonnet, persistent session ON
    python claude_caller.py --model opus    # higher-quality advice
    python claude_caller.py --tts           # also speak the advice aloud
+   python claude_caller.py --no-session    # independent calls (re-send the guide each turn)
    ```
 
 4. **How it works:**
    - Watches `latest_game_state.json` (written by the HDT plugin) and, on each change, asks Claude for one concise recommendation for the current turn.
    - Writes the advice to `agent_output.txt`, which the in-game overlay window displays in real time.
+   - **Keeps one Claude conversation alive per game** (via `--session-id`/`--resume`): the strategy guide (`Prompt.txt`) is sent only on the first turn, and later turns send just the new game state, so Claude remembers prior turns and you never re-explain the rules. A fresh conversation starts automatically when a new game begins. Use `--no-session` to disable.
    - Strips `ANTHROPIC_API_KEY` from the call so it always uses your subscription, not API billing.
    - `python claude_caller.py --once` evaluates the current state a single time (handy for a quick test without a live game).
 
-> **Notes:** Requests count toward your Claude subscription usage limits (not per-token API billing). Latency is slightly higher than a raw API call due to CLI startup, which is fine for turn-based play. Claude has no native voice API, so `--tts` uses a local text-to-speech engine.
+> **Notes:** Requests count toward your Claude subscription usage limits (not per-token API billing). Latency is slightly higher than a raw API call due to CLI startup, which is fine for turn-based play. Claude has no native voice API, so `--tts` uses a local text-to-speech engine. Paths default to `%Desktop%\DeepBattler\Agent`; if your repo lives elsewhere, set the `DEEPBATTLER_AGENT_DIR` environment variable (the plugin, overlay, and this script all honor it).
 
 ---
 
@@ -459,18 +461,20 @@ DeepBattler 还包含一个**组相对策略优化（GRPO）**训练的强化学
 3. **运行：**
    ```bash
    cd Agent/real_time_caller
-   python claude_caller.py                 # 默认模型：sonnet
+   python claude_caller.py                 # 默认模型：sonnet，持续会话开启
    python claude_caller.py --model opus    # 更高质量的建议
    python claude_caller.py --tts           # 同时朗读建议
+   python claude_caller.py --no-session    # 每次独立调用（每回合重发策略指南）
    ```
 
 4. **运行原理：**
    - 监看 HDT 插件写入的 `latest_game_state.json`，每次变化就向 Claude 请求一句当前回合的简洁建议。
    - 将建议写入 `agent_output.txt`，游戏内浮动窗口会实时显示。
+   - **每局保持同一个 Claude 对话**（透过 `--session-id`/`--resume`）：策略指南（`Prompt.txt`）只在第一回合送出，之后每回合只送新的游戏状态，Claude 会记得先前回合，你不必重讲规则。新对局开始时会自动开启新对话。用 `--no-session` 可关闭。
    - 调用时会移除 `ANTHROPIC_API_KEY`，确保始终走订阅而非 API 计费。
    - `python claude_caller.py --once` 只评估当前状态一次（方便快速测试）。
 
-> **说明：** 请求会计入你的 Claude 订阅用量额度（而非按 token 的 API 计费）。由于 CLI 启动，延迟会比裸 API 调用略高，对回合制游戏来说完全够用。Claude 没有原生语音 API，所以 `--tts` 使用本地的文字转语音引擎。
+> **说明：** 请求会计入你的 Claude 订阅用量额度（而非按 token 的 API 计费）。由于 CLI 启动，延迟会比裸 API 调用略高，对回合制游戏来说完全够用。Claude 没有原生语音 API，所以 `--tts` 使用本地的文字转语音引擎。路径默认为 `%Desktop%\DeepBattler\Agent`；若你的 repo 在其他位置，设置环境变量 `DEEPBATTLER_AGENT_DIR`（插件、浮动窗口与本脚本都会读取它）。
 
 ---
 
