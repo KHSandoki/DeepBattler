@@ -84,6 +84,8 @@ namespace DeepBattlerPlugin
 
             int turn = game.GameEntity?.GetTag(GameTag.TURN) ?? 0;
             bool myTurn = playerEntity.GetTag(GameTag.CURRENT_PLAYER) == 1;
+            int playerSpellDamage = SpellDamage(game.Player?.Board);
+            int opponentSpellDamage = SpellDamage(game.Opponent?.Board);
 
             var state = new
             {
@@ -103,6 +105,7 @@ namespace DeepBattlerPlugin
                     mana_available = Math.Max(0, playerEntity.GetTag(GameTag.RESOURCES) - playerEntity.GetTag(GameTag.RESOURCES_USED)),
                     mana_total = playerEntity.GetTag(GameTag.RESOURCES),
                     overloaded_next_turn = playerEntity.GetTag(GameTag.OVERLOAD_OWED),
+                    spell_damage = playerSpellDamage,
                     weapon = Weapon(all, pid),
                     hero_power = HeroPower(all, pid),
                     fatigue = playerEntity.GetTag(GameTag.FATIGUE),
@@ -118,6 +121,7 @@ namespace DeepBattlerPlugin
                     @class = ((CardClass)opponentHero.GetTag(GameTag.CLASS)).ToString(),
                     health = Health(opponentHero),
                     armor = opponentHero.GetTag(GameTag.ARMOR),
+                    spell_damage = opponentSpellDamage,
                     weapon = Weapon(all, oid),
                     hero_power = HeroPower(all, oid),
                     hand_count = game.Opponent?.Hand?.Count() ?? 0,
@@ -141,6 +145,9 @@ namespace DeepBattlerPlugin
 
         private static int Health(Entity hero) =>
             hero.GetTag(GameTag.HEALTH) - hero.GetTag(GameTag.DAMAGE);
+
+        private static int SpellDamage(IEnumerable<Entity> board) =>
+            board == null ? 0 : board.Where(e => e != null && e.Card != null).Sum(e => e.GetTag(GameTag.SPELLPOWER));
 
         private static string HeroName(Entity hero)
         {
@@ -183,6 +190,12 @@ namespace DeepBattlerPlugin
                     poisonous = e.GetTag(GameTag.POISONOUS) == 1,
                     frozen = e.GetTag(GameTag.FROZEN) == 1,
                     windfury = e.GetTag(GameTag.WINDFURY) == 1,
+                    rush = e.GetTag(GameTag.RUSH) == 1,
+                    charge = e.GetTag(GameTag.CHARGE) == 1,
+                    lifesteal = e.GetTag(GameTag.LIFESTEAL) == 1,
+                    reborn = e.GetTag(GameTag.REBORN) == 1,
+                    position = e.GetTag(GameTag.ZONE_POSITION),
+                    summoned_this_turn = e.GetTag(GameTag.NUM_TURNS_IN_PLAY) == 0,
                     ready = e.GetTag(GameTag.EXHAUSTED) == 0 && e.GetTag(GameTag.ATK) > 0 && e.GetTag(GameTag.FROZEN) == 0,
                     description = Clean(e.Card.Text)
                 });

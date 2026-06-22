@@ -94,9 +94,11 @@ PERSONA = {
         "Think ALONGSIDE the player: surface the key reads and considerations for the "
         "current decision (opponent's likely deck, tempo/race, trades, draws/outs, "
         "hand-reads, lethal both ways) as a concise, scannable analysis -- a one-line "
-        "read, then 2-4 relevant bullets, then any lethal/danger flag. Perspective and "
-        "options, not one barked move. Be honest about hidden info ('likely', not "
-        "certain). Trust the provided LETHAL/THREAT math."
+        "read, then 2-4 relevant bullets, then any lethal/danger flag, then a concrete "
+        "'> PLAY:' line (the ordered actions for this turn: cards to play, trade vs go "
+        "face, hero power, what to hold). Perspective + one concrete pick, not just a "
+        "barked move. Be honest about hidden info ('likely', not certain). Trust the "
+        "provided LETHAL/THREAT math."
     ),
 }
 INSTRUCTION = {
@@ -111,8 +113,10 @@ INSTRUCTION = {
         "scannable real-time read for THIS decision: lead with who's ahead / who's "
         "faster and the key question, then the 2-4 most relevant considerations (trades, "
         "what to play around, hand-reads, draws/outs), then flag lethal or incoming "
-        "lethal using the LETHAL/THREAT checks. Cover what matters NOW, not every angle. "
-        "Honest probabilistic reads for hidden info; trust the provided lethal/threat numbers."
+        "lethal using the LETHAL/THREAT checks, then FINISH with a concrete '> PLAY:' "
+        "line -- the ordered actions for this turn (cards to play and order, trade vs go "
+        "face, hero power + target, what to hold). Cover what matters NOW, not every "
+        "angle. Honest probabilistic reads for hidden info; trust the provided lethal/threat numbers."
     ),
 }
 
@@ -282,34 +286,43 @@ _DEAL_RE = re.compile(r"[Dd]eal[s]?\s+\$?(\d+)\s+damage")
 _ATK_BUFF_RE = re.compile(r"\+\d+\s*Attack|gain[s]?\s+\+?\d*\s*Attack|give[s]?\b.*\bAttack", re.IGNORECASE)
 
 
-def _ready_attackers(board):
-    out = []
-    for m in board or []:
-        ready = m.get("ready")
-        if ready is None:  # older state without the field: best-effort
-            ready = (m.get("attack", 0) or 0) > 0 and not m.get("frozen")
-        if ready and (m.get("attack", 0) or 0) > 0:
-            out.append(m)
-    return out
+def _is_ready(m):
+    ready = m.get("ready")
+    if ready is None:  # older state without the field: best-effort
+        ready = (m.get("attack", 0) or 0) > 0 and not m.get("frozen")
+    return bool(ready) and (m.get("attack", 0) or 0) > 0
+
+
+def _can_hit_face(m):
+    """Ready AND allowed to attack the hero this turn (Rush just-summoned can't)."""
+    if not _is_ready(m):
+        return False
+    if m.get("charge"):
+        return True
+    if m.get("rush") and m.get("summoned_this_turn"):
+        return False
+    return True
 
 
 def compute_lethal(state):
     """Best-effort lethal helper for Standard.
 
-    It computes ONLY the reliable, deterministic part (ready board attack +
-    windfury + weapon vs the opponent's effective HP, plus flat 'Deal N damage'
-    burn in hand) and then explicitly LISTS the complications it can NOT resolve
-    (divine shield, taunt clearing, your own attack buffs / board growth, hero
-    power, location / random / conditional effects) so Claude factors them in.
-    It is a grounded checklist, not a full combat simulator. Returns text or None.
+    Computes ONLY the reliable part (face-capable board attack + windfury +
+    weapon vs the opponent's effective HP, plus flat 'Deal N damage' burn in hand,
+    with spell damage applied to spells) and then explicitly LISTS the
+    complications it can NOT resolve (divine shield, taunt clearing, rush-can't-
+    face, your attack buffs / board growth, hero power, location / random effects)
+    so Claude factors them. A grounded checklist, not a full sim. Text or None.
     """
     me = state.get("player")
     opp = state.get("opponent")
     if not me or not opp:
         return None
 
-    attackers = _ready_attackers(me.get("board", []))
-    board_dmg = sum((m.get("attack", 0) or 0) * (2 if m.get("windfury") else 1) for m in attackers)
+    my_board = me.get("board", [])
+    face_attackers = [m for m in my_board if _can_hit_face(m)]
+    board_dmg = sum((m.get("attack", 0) or 0) * (2 if m.get("windfury") else 1) for m in face_attackers)
+    rush_excluded = [m for m in my_board if _is_ready(m) and not _can_hit_face(m)]
     weapon = me.get("weapon")
     hero_can = me.get("hero_can_attack")
     weapon_dmg = (weapon.get("attack", 0) or 0) if (weapon and (hero_can is None or hero_can)) else 0
@@ -318,27 +331,31 @@ def compute_lethal(state):
     opp_board = opp.get("board", [])
     taunts = [m for m in opp_board if m.get("taunt")]
 
-    burns = []
+    sd = me.get("spell_damage", 0) or 0
+    burns = []  # (name, effective_damage, is_spell)
     for c in me.get("hand", []):
         mt = _DEAL_RE.search(c.get("description", "") or "")
         if mt:
-            burns.append((c.get("name", "?"), int(mt.group(1))))
-    burn_total = sum(d for _, d in burns)
+            base = int(mt.group(1))
+            is_spell = (c.get("type", "") or "").lower() == "spell"
+            burns.append((c.get("name", "?"), base + sd if is_spell else base, is_spell))
+    burn_total = sum(d for _, d, _ in burns)
 
     lines = ["⚔️ LETHAL CHECK — reliable arithmetic only (complications listed after):"]
     atk_list = ", ".join(
         f"{m.get('name', '?')} {m.get('attack', 0)}" + ("x2(WF)" if m.get("windfury") else "")
-        for m in attackers
+        for m in face_attackers
     ) or "none"
-    lines.append(f"  - Ready attackers: {atk_list} = {board_dmg} board dmg")
+    lines.append(f"  - Face-capable attackers: {atk_list} = {board_dmg} board dmg")
     if weapon_dmg:
         lines.append(f"  - Weapon: {weapon.get('name', '?')} {weapon_dmg}")
     lines.append(f"  - Raw face damage (taunts ignored): {raw}")
     lines.append(f"  - Opponent effective HP: {opp_hp} (health {opp.get('health', '?')} + armor {opp.get('armor', 0)})")
     if burns:
+        sd_note = f" (incl. +{sd} spell dmg on spells)" if sd else ""
         lines.append(
-            "  - Flat burn in hand ('Deal N damage'): "
-            + ", ".join(f"{n} {d}" for n, d in burns)
+            "  - Flat burn in hand ('Deal N damage')" + sd_note + ": "
+            + ", ".join(f"{n} {d}" for n, d, _ in burns)
             + f" = up to {burn_total} (only if face-targetable)"
         )
 
@@ -356,14 +373,16 @@ def compute_lethal(state):
     ds_nontaunt = [m for m in opp_board if m.get("divine_shield") and not m.get("taunt")]
     if ds_nontaunt:
         comp.append("Opponent Divine Shields (each eats one hit): " + ", ".join(m.get("name", "?") for m in ds_nontaunt))
-    my_poison = [m for m in attackers if m.get("poisonous")]
+    if rush_excluded:
+        comp.append("Ready but CAN'T hit face this turn (Rush, just played): " + ", ".join(m.get("name", "?") for m in rush_excluded))
+    my_poison = [m for m in face_attackers if m.get("poisonous")]
     if my_poison and taunts:
         comp.append("Your Poisonous attackers can kill any ONE taunt cheaply: " + ", ".join(m.get("name", "?") for m in my_poison))
     buff_cards = [c.get("name", "?") for c in me.get("hand", []) if _ATK_BUFF_RE.search(c.get("description", "") or "")]
     if buff_cards:
         comp.append("Attack buffs in HAND (extra dmg if played; sequence first): " + ", ".join(buff_cards))
     growth = [
-        m.get("name", "?") for m in me.get("board", [])
+        m.get("name", "?") for m in my_board
         if "attack" in (m.get("description", "") or "").lower()
         and ("gain" in (m.get("description", "") or "").lower() or "+" in (m.get("description", "") or ""))
     ]

@@ -13,6 +13,7 @@
     "mana_available": 5,
     "mana_total": 5,
     "overloaded_next_turn": 0,
+    "spell_damage": 1,
     "weapon": null,
     "hero_power": { "name": "Fireblast", "cost": 2, "description": "Deal 1 damage.", "used": false },
     "fatigue": 0,
@@ -23,10 +24,11 @@
       { "name": "Arcane Intellect", "cost": 3, "type": "Spell", "description": "Draw 2 cards." }
     ],
     "board": [
-      { "name": "Mana Wyrm", "attack": 3, "health": 3, "taunt": false, "divine_shield": false, "stealth": false, "poisonous": false, "frozen": false, "windfury": false, "ready": true, "description": "Whenever you cast a spell, gain +1 Attack." }
+      { "name": "Mana Wyrm", "attack": 3, "health": 3, "taunt": false, "divine_shield": false, "stealth": false, "poisonous": false, "frozen": false, "windfury": false, "rush": false, "charge": false, "lifesteal": false, "reborn": false, "position": 1, "summoned_this_turn": false, "ready": true, "description": "Whenever you cast a spell, gain +1 Attack." },
+      { "name": "Spellslinger Rusher", "attack": 4, "health": 4, "taunt": false, "divine_shield": false, "stealth": false, "poisonous": false, "frozen": false, "windfury": false, "rush": true, "charge": false, "lifesteal": false, "reborn": false, "position": 2, "summoned_this_turn": true, "ready": true, "description": "Rush." }
     ],
     "secrets": [],
-    "deck_remaining_count": 22,
+    "deck_remaining_count": 21,
     "deck_known_cards": [
       { "name": "Polymorph", "cost": 4, "count": 2 },
       { "name": "Flamestrike", "cost": 7, "count": 1 }
@@ -37,12 +39,13 @@
     "class": "HUNTER",
     "health": 14,
     "armor": 0,
+    "spell_damage": 0,
     "weapon": null,
     "hero_power": { "name": "Steady Shot", "cost": 2, "description": "Deal 2 damage to the enemy hero." },
     "hand_count": 3,
     "board": [
-      { "name": "Alleycat", "attack": 1, "health": 1, "taunt": false, "divine_shield": false, "stealth": false, "poisonous": false, "frozen": false, "windfury": false, "ready": false, "description": "Battlecry: Summon a 1/1 Tabbycat." },
-      { "name": "Animal Companion", "attack": 4, "health": 2, "taunt": false, "divine_shield": false, "stealth": false, "poisonous": false, "frozen": false, "windfury": false, "ready": true, "description": "" }
+      { "name": "Alleycat", "attack": 1, "health": 1, "taunt": false, "divine_shield": false, "stealth": false, "poisonous": false, "frozen": false, "windfury": false, "rush": false, "charge": false, "lifesteal": false, "reborn": false, "position": 1, "summoned_this_turn": false, "ready": false, "description": "Battlecry: Summon a 1/1 Tabbycat." },
+      { "name": "Animal Companion", "attack": 4, "health": 2, "taunt": false, "divine_shield": false, "stealth": false, "poisonous": false, "frozen": false, "windfury": false, "rush": false, "charge": false, "lifesteal": false, "reborn": false, "position": 2, "summoned_this_turn": false, "ready": true, "description": "" }
     ],
     "secrets_count": 1,
     "known_played_cards": [
