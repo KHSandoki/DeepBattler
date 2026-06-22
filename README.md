@@ -169,6 +169,37 @@ DeepBattler also includes a **Group Relative Policy Optimization (GRPO)** traine
 
 ---
 
+#### Using Claude Code — Claude Max subscription (No API key) 🦞
+
+If you have a **Claude Max** (or Pro) subscription, you can drive DeepBattler through the local **Claude Code CLI** instead of a paid API key. Each suggestion runs `claude -p` headlessly under your subscription login — no `ANTHROPIC_API_KEY` and no per-token billing.
+
+1. **Install Claude Code and log in once:**
+   - Install (see https://docs.claude.com/en/docs/claude-code), e.g. `npm install -g @anthropic-ai/claude-code`
+   - Run `claude` once, then `/login` and choose your Claude account (subscription).
+
+2. **(Optional) Voice output:**
+   ```bash
+   pip install pyttsx3      # only needed if you want spoken advice (offline)
+   ```
+
+3. **Run the caller:**
+   ```bash
+   cd Agent/real_time_caller
+   python claude_caller.py                 # default model: sonnet
+   python claude_caller.py --model opus    # higher-quality advice
+   python claude_caller.py --tts           # also speak the advice aloud
+   ```
+
+4. **How it works:**
+   - Watches `latest_game_state.json` (written by the HDT plugin) and, on each change, asks Claude for one concise recommendation for the current turn.
+   - Writes the advice to `agent_output.txt`, which the in-game overlay window displays in real time.
+   - Strips `ANTHROPIC_API_KEY` from the call so it always uses your subscription, not API billing.
+   - `python claude_caller.py --once` evaluates the current state a single time (handy for a quick test without a live game).
+
+> **Notes:** Requests count toward your Claude subscription usage limits (not per-token API billing). Latency is slightly higher than a raw API call due to CLI startup, which is fine for turn-based play. Claude has no native voice API, so `--tts` uses a local text-to-speech engine.
+
+---
+
 #### Using OpenAI GPT (Legacy)  
 1. **Install the required Python packages:**  
    ```bash  
@@ -409,6 +440,37 @@ DeepBattler 还包含一个**组相对策略优化（GRPO）**训练的强化学
    - **实时建议**：可视化文字窗口显示战略建议
    - **自动游戏检测**：游戏开始时自动适配
    - **动态更新**：系统提示随游戏状态变化而更新
+
+---
+
+#### 使用 Claude Code —— Claude Max 订阅（无需 API key）🦞
+
+如果你有 **Claude Max**（或 Pro）订阅，可以透过本地的 **Claude Code CLI** 来驱动 DeepBattler，而不需要付费 API key。每次建议都以 `claude -p` 无界面模式、用你的订阅登入身份执行 —— 不需要 `ANTHROPIC_API_KEY`，也没有按 token 计费。
+
+1. **安装 Claude Code 并登入一次：**
+   - 安装（见 https://docs.claude.com/en/docs/claude-code），例如 `npm install -g @anthropic-ai/claude-code`
+   - 执行一次 `claude`，然后 `/login` 选择你的 Claude 账号（订阅）。
+
+2. **（可选）语音输出：**
+   ```bash
+   pip install pyttsx3      # 只有需要语音朗读时才安装（离线）
+   ```
+
+3. **运行：**
+   ```bash
+   cd Agent/real_time_caller
+   python claude_caller.py                 # 默认模型：sonnet
+   python claude_caller.py --model opus    # 更高质量的建议
+   python claude_caller.py --tts           # 同时朗读建议
+   ```
+
+4. **运行原理：**
+   - 监看 HDT 插件写入的 `latest_game_state.json`，每次变化就向 Claude 请求一句当前回合的简洁建议。
+   - 将建议写入 `agent_output.txt`，游戏内浮动窗口会实时显示。
+   - 调用时会移除 `ANTHROPIC_API_KEY`，确保始终走订阅而非 API 计费。
+   - `python claude_caller.py --once` 只评估当前状态一次（方便快速测试）。
+
+> **说明：** 请求会计入你的 Claude 订阅用量额度（而非按 token 的 API 计费）。由于 CLI 启动，延迟会比裸 API 调用略高，对回合制游戏来说完全够用。Claude 没有原生语音 API，所以 `--tts` 使用本地的文字转语音引擎。
 
 ---
 
